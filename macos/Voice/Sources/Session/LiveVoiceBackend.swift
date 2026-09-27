@@ -8,8 +8,6 @@ import Foundation
 final class LiveVoiceBackend: VoiceBackend, HeadlessBackend {
 
     var onState: ((SessionState) -> Void)?
-    var onInputLevel: ((Float) -> Void)?
-    var onOutputLevel: ((Float) -> Void)?
     var onUserSpeechStarted: (() -> Void)?
     var onTurnDropped: (() -> Void)?
     var onUserFinal: ((String, String?) -> Void)?
@@ -17,7 +15,6 @@ final class LiveVoiceBackend: VoiceBackend, HeadlessBackend {
     var onAgentDone: (() -> Void)?
     var onToolActive: ((String) -> Void)?
     var onToolDone: ((String, String) -> Void)?
-    var onAudioStatus: ((String?) -> Void)?
     var onToolsCancelled: (() -> Void)?
     var onSpoken: ((String) -> Void)?
     var onAskPi: ((String, String) -> Void)?
@@ -74,7 +71,6 @@ final class LiveVoiceBackend: VoiceBackend, HeadlessBackend {
     private var lastResponseCreatedAt = Date.distantPast
     private var cancelledIds = Set<String>()
     private var seenAdmissionIds = Set<String>()
-    private var lastOutputLevelAt = Date.distantPast
     /// Saved transcript, set by the controller before start() so the live
     /// session opens with the recent conversation in context.
     var historyMessages: [(role: String, text: String, name: String?)] = []
@@ -117,7 +113,6 @@ final class LiveVoiceBackend: VoiceBackend, HeadlessBackend {
         let configuredGain = UserDefaults.standard.object(forKey: "voice.micGain") as? Double ?? 0
         pcm.micGain = configuredGain > 0 ? Float(configuredGain) : 3.0
 
-        onAudioStatus?("Starting local services…")
         do {
             try await LocalServiceStarter.shared.ensureReady(voice: wsURL)
         } catch {
@@ -125,7 +120,6 @@ final class LiveVoiceBackend: VoiceBackend, HeadlessBackend {
             throw error
         }
         guard !closed, connectionGeneration == generation, !Task.isCancelled else { return }
-        onAudioStatus?(nil)
 
         // Open the socket before the audio engine: the TCP/WebSocket handshake
         // and session.created happen on the network while voice-processing
@@ -146,12 +140,10 @@ final class LiveVoiceBackend: VoiceBackend, HeadlessBackend {
             return
         }
 
-        onAudioStatus?(audio.statusNote)
         audio.onPlaybackDrained = { [weak self] in
             Task { @MainActor in
                 guard let self, !self.closed, self.connectionGeneration == generation,
                       self.activeResponseId.isEmpty, !self.audio.isPlaying else { return }
-                self.onOutputLevel?(0)
                 self.onState?(.listening)
                 if self.responseRequestPending && self.toolScope.pendingIds.isEmpty {
                     self.responseRequestPending = false
@@ -163,12 +155,6 @@ final class LiveVoiceBackend: VoiceBackend, HeadlessBackend {
         let capture = mic
         let sink = socket
         let queue = micQueue
-        audio.onInputLevel = { [weak self] level in
-            Task { @MainActor in
-                guard let self, self.connectionGeneration == generation, !self.closed else { return }
-                self.onInputLevel?(level)
-            }
-        }
         audio.onBuffer = { buffer in
             guard let bytes = bridge.micPCM16(from: buffer) else {
                 NSLog("[Tap] micPCM16 returned nil for frames=\(buffer.frameLength)")
@@ -210,7 +196,6 @@ final class LiveVoiceBackend: VoiceBackend, HeadlessBackend {
         self.muted = muted
         mic.setMuted(muted)
         audio.setMuted(muted)
-        if muted { onInputLevel?(0) }
     }
 
     func interrupt() {
@@ -218,7 +203,6 @@ final class LiveVoiceBackend: VoiceBackend, HeadlessBackend {
         rememberCancelled(activeResponseId)
         send(["type": "response.cancel"])
         audio.clearPlayback()
-        onOutputLevel?(0)
         finishAgentTurn()
         if !closed { onState?(.listening) }
     }
@@ -363,9 +347,7 @@ final class LiveVoiceBackend: VoiceBackend, HeadlessBackend {
         webSocket = nil
         socket.attach(nil, generation: connectionGeneration)
         audio.onBuffer = nil
-        audio.onInputLevel = nil
         audio.onPlaybackDrained = nil
-        onAudioStatus?(nil)
         audio.stop()
         pcm.reset()
         mic.disarm()
@@ -374,8 +356,6 @@ final class LiveVoiceBackend: VoiceBackend, HeadlessBackend {
         responseRequestPending = false
         cancelledIds.removeAll()
         muted = false
-        onInputLevel?(0)
-        onOutputLevel?(0)
         if emitIdle { onState?(.idle) }
     }
 
@@ -396,14 +376,10 @@ final class LiveVoiceBackend: VoiceBackend, HeadlessBackend {
         webSocket = nil
         socket.attach(nil, generation: connectionGeneration)
         audio.onBuffer = nil
-        audio.onInputLevel = nil
         audio.onPlaybackDrained = nil
-        onAudioStatus?(nil)
         audio.stop()
         pcm.reset()
         mic.disarm()
-        onInputLevel?(0)
-        onOutputLevel?(0)
         onState?(.failed(message))
     }
 
@@ -435,9 +411,8 @@ final class LiveVoiceBackend: VoiceBackend, HeadlessBackend {
                         return owner.audio.playbackFormat
                     }
                     guard let dest, let buffer = pcm.playbackBuffer(base64: delta.b64, dest: dest) else { continue }
-                    let level = pcm.rmsLevel(buffer)
                     await MainActor.run {
-                        owner?.playDecodedAudio(buffer, level: level, responseId: delta.responseId, generation: generation)
+                        owner?.playDecodedAudio(buffer, responseId: delta.responseId, generation: generation)
                     }
                 } else {
                     await MainActor.run {
@@ -506,12 +481,10 @@ final class LiveVoiceBackend: VoiceBackend, HeadlessBackend {
 
     private func playDecodedAudio(
         _ buffer: AVAudioPCMBuffer,
-        level: Float,
         responseId: String,
         generation: UUID
     ) {
         guard connectionGeneration == generation, !closed, !shouldDropAudio(responseId: responseId) else { return }
-        publishOutputLevel(level)
         audio.play(buffer)
         onState?(.agentSpeaking)
     }
@@ -561,7 +534,6 @@ final class LiveVoiceBackend: VoiceBackend, HeadlessBackend {
             // without waiting for the user's transcription to finish.
             if json["interrupt_response"] as? Bool == true, audio.isPlaying {
                 audio.clearPlayback()
-                onOutputLevel?(0)
             }
             let responseActive = !activeResponseId.isEmpty
             if !closed,
@@ -613,7 +585,6 @@ final class LiveVoiceBackend: VoiceBackend, HeadlessBackend {
             if !rid.isEmpty, cancelledIds.contains(rid) { return }
             if let b64 = json["delta"] as? String,
                let buffer = pcm.playbackBuffer(base64: b64, dest: audio.playbackFormat) {
-                publishOutputLevel(pcm.rmsLevel(buffer))
                 audio.play(buffer)
             }
             onState?(.agentSpeaking)
@@ -637,7 +608,6 @@ final class LiveVoiceBackend: VoiceBackend, HeadlessBackend {
             }
             finishAgentTurn()
             if !audio.isPlaying {
-                onOutputLevel?(0)
                 if !closed { onState?(.listening) }
             }
             if responseRequestPending && !audio.isPlaying,
@@ -732,7 +702,6 @@ final class LiveVoiceBackend: VoiceBackend, HeadlessBackend {
         rememberCancelled(activeResponseId)
         if audio.isPlaying {
             audio.clearPlayback()
-            onOutputLevel?(0)
         }
     }
 
@@ -751,13 +720,6 @@ final class LiveVoiceBackend: VoiceBackend, HeadlessBackend {
             return id
         }
         return ""
-    }
-
-    private func publishOutputLevel(_ level: Float) {
-        let now = Date()
-        guard now.timeIntervalSince(lastOutputLevelAt) > 1.0 / 30 else { return }
-        lastOutputLevelAt = now
-        onOutputLevel?(level)
     }
 
     private func sendSessionUpdate() {

@@ -30,10 +30,8 @@ final class AudioEngine {
         NSLog("[AudioEngine] microphone mode: active=\(active) preferred=\(preferred)")
     }
 
-    var onInputLevel: ((Float) -> Void)?
     var onBuffer: ((AVAudioPCMBuffer) -> Void)?
     var onPlaybackDrained: (() -> Void)?
-    private(set) var statusNote: String?
     private var headphones = false
     private let playback = PlaybackTracker()
 
@@ -59,7 +57,6 @@ final class AudioEngine {
     private var shouldBeRunning = false
     private var tapped = false
     private var muted = false
-    private var lastLevelSent = Date.distantPast
     private(set) var voiceProcessingEnabled = false
     private var ioFormat: AVAudioFormat?
     private var watchdog: Timer?
@@ -164,7 +161,6 @@ final class AudioEngine {
         let mode = UserDefaults.standard.string(forKey: "voice.audioMode") ?? "automatic"
         headphones = mode == "headphones"
         let enableVPIO = mode == "automatic"
-        statusNote = nil
         AudioEngine.logMicrophoneMode()
 
         if enableVPIO {
@@ -214,7 +210,7 @@ final class AudioEngine {
         }
 
         if !voiceProcessingEnabled && !headphones {
-            statusNote = "Speaker compatibility mode: mic is suppressed during playback. To keep mic open, run: defaults write dev.jldynamics.Voice voice.audioMode headphones"
+            NSLog("[AudioEngine] speaker compatibility mode suppresses the mic during playback")
         }
         if !player.isPlaying { player.play() }
         let inFmt = engine.inputNode.inputFormat(forBus: 0)
@@ -240,7 +236,6 @@ final class AudioEngine {
             player.stop()
             playback.clear()
             ioFormat = nil
-            DispatchQueue.main.async { [weak self] in self?.onInputLevel?(0) }
             return
         }
         if tapped {
@@ -251,7 +246,6 @@ final class AudioEngine {
         playback.clear()
         engine.stop()
         ioFormat = nil
-        DispatchQueue.main.async { [weak self] in self?.onInputLevel?(0) }
     }
 
     /// The engine can die silently (no configuration notice), leaving the tap
@@ -274,7 +268,6 @@ final class AudioEngine {
 
     func setMuted(_ muted: Bool) {
         self.muted = muted
-        if muted { DispatchQueue.main.async { [weak self] in self?.onInputLevel?(0) } }
     }
 
     var isPlaying: Bool { playback.isAudible }
@@ -335,33 +328,11 @@ final class AudioEngine {
             // duck the tap buffer so speaker audio cannot loop back to the server VAD.
             if !self.headphones && self.playback.needsEchoGuard() &&
                 (!self.voiceProcessingEnabled || self.playback.needsFirstReplyGuard()) {
-                DispatchQueue.main.async { [weak self] in self?.onInputLevel?(0) }
                 return
             }
             self.onBuffer?(buffer)
-            self.publishLevel(from: buffer)
         }
         tapped = true
     }
 
-    private func publishLevel(from buffer: AVAudioPCMBuffer) {
-        let now = Date()
-        guard now.timeIntervalSince(lastLevelSent) > 1.0 / 30 else { return }
-        lastLevelSent = now
-        guard let channels = buffer.floatChannelData else { return }
-        let count = Int(buffer.frameLength)
-        let chCount = Int(buffer.format.channelCount)
-        guard count > 0, chCount > 0 else { return }
-        var sum: Float = 0
-        for i in 0..<count {
-            var mixed: Float = 0
-            for c in 0..<chCount { mixed += channels[c][i] }
-            mixed /= Float(chCount)
-            sum += mixed * mixed
-        }
-        let rms = (sum / Float(count)).squareRoot()
-        let db = 20 * log10(max(rms, 0.000_001))
-        let level = max(0, min(1, (db + 50) / 50))
-        DispatchQueue.main.async { [weak self] in self?.onInputLevel?(level) }
-    }
 }

@@ -96,12 +96,13 @@ struct RuntimeTests {
         testTranscript()
         testIdleChromeKeepsMute()
         testHeadlessBridge()
+        await testSessionConversationHistory()
         testPiJobTracker()
         assert(!PiJobTracker.shouldSpeakProgress(elapsed: 7, changed: true))
         assert(PiJobTracker.shouldSpeakProgress(elapsed: 8, changed: true))
         assert(!PiJobTracker.shouldSpeakProgress(elapsed: 19, changed: false))
         assert(PiJobTracker.shouldSpeakProgress(elapsed: 20, changed: false))
-        print("Native runtime checks passed: playback, cancellation, tool definitions, transcript revisions, headless bridge, pi jobs")
+        print("Native runtime checks passed: playback, cancellation, tool definitions, transcript revisions, headless bridge, pi jobs, conversation history")
     }
 
     static func pcm16(_ samples: [Int16]) -> [UInt8] {
@@ -407,6 +408,60 @@ struct RuntimeTests {
         bridge.handle(line: "")
         bridge.handle(line: #"{"type":"future_unknown_command","data":123}"#)
         bridge.handle(line: #"{"no_type_field":true}"#)
+
+        // Wire contract (out): speech_started
+        emitted.removeAll()
+        backend.onUserSpeechStarted?()
+        assert(emitted.count == 1, "speech_started event emitted")
+        assert((emitted[0]["type"] as? String) == "speech_started")
+
+        // Wire contract (out): stop_work
+        emitted.removeAll()
+        backend.onStopPi?()
+        assert(emitted.count == 1, "stop_work event emitted")
+        assert((emitted[0]["type"] as? String) == "stop_work")
+
+        // Wire contract (out): error
+        emitted.removeAll()
+        backend.onState?(.failed("socket connection lost"))
+        assert(emitted.count == 1, "error event emitted")
+        assert((emitted[0]["type"] as? String) == "error")
+        assert((emitted[0]["message"] as? String) == "socket connection lost")
+
+        // Reattaching bridge does not duplicate event emissions
+        bridge.attach(session: session, listenToStdin: false)
+        emitted.removeAll()
+        backend.onUserFinal?("hello again", "item-reattach")
+        assert(emitted.count == 1, "reattached bridge must emit exactly one heard event")
+        assert((emitted[0]["type"] as? String) == "heard")
+    }
+
+    @MainActor
+    static func testSessionConversationHistory() async {
+        let backend = MockVoiceBackend()
+        let session = SessionController(backend: backend)
+        backend.onState?(.listening)
+
+        // Simulate a turn: user speaks, agent replies, tool runs
+        backend.onUserSpeechStarted?()
+        backend.onUserFinal?("what is the weather", "item-h1")
+        backend.onAgentDelta?("Checking the radar for you.")
+        backend.onAgentDone?()
+        backend.onToolDone?("bash", "temperature is 72 degrees")
+
+        // Turn settling: second user turn
+        backend.onUserFinal?("and tomorrow", "item-h2")
+        backend.onAgentDelta?("Tomorrow will be sunny.")
+        backend.onAgentDone?()
+
+        // Reconnect session: begin() passes history messages to backend
+        await session.begin()
+        assert(backend.historyMessages.count >= 4, "Session history should have user, assistant, and tool turns")
+        assert(backend.historyMessages.contains { $0.role == "user" && $0.text.contains("what is the weather") })
+        assert(backend.historyMessages.contains { $0.role == "assistant" && $0.text.contains("Checking the radar") })
+        assert(backend.historyMessages.contains { $0.role == "tool" && $0.name == "bash" && $0.text.contains("72 degrees") })
+        assert(backend.historyMessages.contains { $0.role == "user" && $0.text.contains("and tomorrow") })
+        assert(backend.historyMessages.contains { $0.role == "assistant" && $0.text.contains("Tomorrow will be sunny") })
     }
 
     @MainActor

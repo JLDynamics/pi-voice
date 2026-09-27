@@ -58,7 +58,6 @@ xcrun swiftc \
   -target "$TARGET" \
   -parse-as-library \
   -O \
-  -framework SwiftUI \
   -framework AppKit \
   -framework AVFoundation \
   -framework Carbon \
