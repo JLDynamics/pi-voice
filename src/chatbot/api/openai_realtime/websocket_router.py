@@ -23,9 +23,6 @@ from chatbot.api.openai_realtime.queue_flush import (
     audio_payload,
     flush_queue,
     is_audio_done,
-    keep_audio_sentinel,
-    keep_session_end,
-    keep_user_text_event,
 )
 from chatbot.api.openai_realtime.service import (
     ResponseSpeakEvent,
@@ -36,7 +33,7 @@ from chatbot.api.openai_realtime.transports import (
     WebSocketTransport,
     send_ws_event,
 )
-from chatbot.api.openai_realtime.turn_interruption import PipelineTurnInterrupter
+from chatbot.api.openai_realtime.turn_interruption import PipelineTurnInterrupter, flush_turn_queues
 from chatbot.build_info import BACKEND_SOURCES, SourceSnapshot
 from chatbot.pipeline.control import SESSION_END, PipelineControlMessage, is_control_message
 from chatbot.pipeline.events import (
@@ -49,6 +46,7 @@ from chatbot.pipeline.log_context import pipeline_log_ctx
 from chatbot.pipeline.messages import PIPELINE_END, AudioOutput
 
 logger = logging.getLogger(__name__)
+
 MAX_AUDIO_BATCH_BYTES = 6400
 # How long the release path waits for SESSION_END to propagate through the
 # handler chain back to output_queue before warning that the unit is stuck.
@@ -328,11 +326,7 @@ async def _dispatch_client_event(
         if st.in_response or st.response_pending:
             unit.cancel_scope.cancel()
             st.response_pending = False
-        flush_queue(unit.output_queue, preserve=keep_audio_sentinel)
-        flush_queue(unit.text_output_queue, preserve=keep_user_text_event)
-        # Drop any LLM request still waiting to be processed so it can't
-        # recapture the post-cancel generation and emit stale output.
-        flush_queue(unit.text_prompt_queue, preserve=keep_session_end)
+        flush_turn_queues(unit)
         transport.discard_pending_audio()
         events = service.handle_response_cancel(session_id)
         if events:
