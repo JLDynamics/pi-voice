@@ -14,6 +14,13 @@ from chatbot.pipeline.turn_admission import TurnAdmission
 _RECENT_IDS = 32
 
 
+def flush_turn_queues(unit: PipelineUnit) -> None:
+    """Drop stale turn work while keeping drain sentinels and user events."""
+    flush_queue(unit.output_queue, preserve=keep_audio_sentinel)
+    flush_queue(unit.text_output_queue, preserve=keep_user_text_event)
+    flush_queue(unit.text_prompt_queue, preserve=keep_session_end)
+
+
 class PipelineTurnInterrupter:
     """Flush stale pipeline work after a typed admission (VAD onset or admitted transcript)."""
 
@@ -36,8 +43,6 @@ class PipelineTurnInterrupter:
         unit.cancel_scope.cancel()
         if session is not None and session.session_id:
             unit.service._state(session.session_id).response_pending = False
-        flush_queue(unit.output_queue, preserve=keep_audio_sentinel)
-        flush_queue(unit.text_output_queue, preserve=keep_user_text_event)
-        flush_queue(unit.text_prompt_queue, preserve=keep_session_end)
+        flush_turn_queues(unit)
         if unit.response_playing.is_set():
             unit.response_playing.clear()

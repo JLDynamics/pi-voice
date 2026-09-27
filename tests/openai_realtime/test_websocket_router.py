@@ -27,10 +27,16 @@ from chatbot.pipeline.control import SESSION_END, PipelineControlMessage, is_con
 from chatbot.pipeline.events import (
     AssistantTextEvent,
     SpeechStartedEvent,
+    SpeechStoppedEvent,
     TokenUsageEvent,
     TranscriptionCompletedEvent,
 )
-from chatbot.pipeline.messages import AUDIO_RESPONSE_DONE, PIPELINE_END, AudioOutput
+from chatbot.pipeline.messages import (
+    AUDIO_RESPONSE_DONE,
+    PIPELINE_END,
+    AudioOutput,
+    GenerateResponseRequest,
+)
 from chatbot.pipeline.ready import PipelineReady
 
 # ---------------------------------------------------------------------------
@@ -367,6 +373,76 @@ class TestClientEventDispatch:
                 assert not response_playing.is_set()
                 assert cancel_scope.discarding
 
+    def test_response_cancel_preserves_sentinels_and_user_events(self, setup, monkeypatch):
+        """response.cancel flushes stale audio and prompt requests while preserving sentinels and user events."""
+        app, service, _, output_queue, text_output_queue, _, _, response_playing, cancel_scope = setup
+        text_prompt_queue = service.text_prompt_queue
+        with TestClient(app) as client:
+            with client.websocket_connect("/v1/realtime") as ws:
+                ws.receive_json()
+                conn_id = list(service._conns.keys())[0]
+                service.response._ensure_response(conn_id)
+                response_playing.set()
+
+                # Spy on transport.discard_pending_audio
+                unit = getattr(service.turn_admissions, "_unit", None)
+                assert unit is not None and unit.session is not None and unit.session.transport is not None
+                session = unit.session
+                discard_called = False
+                orig_discard = session.transport.discard_pending_audio
+
+                def spy_discard() -> None:
+                    nonlocal discard_called
+                    discard_called = True
+                    orig_discard()
+
+                monkeypatch.setattr(session.transport, "discard_pending_audio", spy_discard)
+
+                # text_prompt_queue: stale request and session end sentinel
+                session_end_prompt = PipelineControlMessage(SESSION_END.kind, session_id=conn_id)
+                req = GenerateResponseRequest(runtime_config=service._state(conn_id).runtime_config)
+                text_prompt_queue.put(req)
+                text_prompt_queue.put(session_end_prompt)
+
+                # output_queue: normal pcm and session end sentinel
+                output_queue.put(_pcm_bytes(256))
+                session_end_out = PipelineControlMessage(SESSION_END.kind, session_id=conn_id)
+                output_queue.put(session_end_out)
+
+                # text_output_queue: stale text and user event
+                text_output_queue.put(AssistantTextEvent(text="stale response"))
+                text_output_queue.put(SpeechStoppedEvent())
+
+                ws.send_json({"type": "response.cancel"})
+
+                received_types: set[str] = set()
+                for _ in range(4):
+                    try:
+                        received_types.add(ws.receive_json()["type"])
+                    except Exception:
+                        break
+                    if "response.done" in received_types and "input_audio_buffer.speech_stopped" in received_types:
+                        break
+
+                assert "response.output_audio.done" in received_types
+                assert "response.done" in received_types
+                assert "input_audio_buffer.speech_stopped" in received_types
+
+                assert discard_called
+                assert not response_playing.is_set()
+                # SESSION_END survived in output_queue and was consumed by send loop
+                deadline = time.monotonic() + 1
+                while not session.drained.is_set() and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                assert session.drained.is_set()
+
+                # text_prompt_queue: GenerateResponseRequest discarded, SESSION_END preserved
+                prompt_items: list[object] = []
+                while not text_prompt_queue.empty():
+                    prompt_items.append(text_prompt_queue.get_nowait())
+                assert session_end_prompt in prompt_items
+                assert not any(isinstance(x, GenerateResponseRequest) for x in prompt_items)
+
     def test_response_cancel_while_the_model_is_still_thinking_cancels_the_turn(self, setup):
         """Stop pressed before the first token (no response open yet) must land.
 
@@ -532,6 +608,72 @@ class TestSendLoop:
                 output_queue.put(AUDIO_RESPONSE_DONE)
                 time.sleep(0.15)
                 assert not cancel_scope.discarding
+
+    def test_barge_in_preserves_sentinels_and_user_events(self, setup, monkeypatch):
+        """Speech started barge-in flushes stale audio and prompt requests while preserving sentinels."""
+        app, service, _, output_queue, text_output_queue, _, _, response_playing, cancel_scope = setup
+        text_prompt_queue = service.text_prompt_queue
+        with TestClient(app) as client:
+            with client.websocket_connect("/v1/realtime") as ws:
+                ws.receive_json()  # session.created
+                conn_id = list(service._conns.keys())[0]
+                service.response._ensure_response(conn_id)
+                response_playing.set()
+
+                unit = getattr(service.turn_admissions, "_unit", None)
+                assert unit is not None and unit.session is not None and unit.session.transport is not None
+                session = unit.session
+                discard_called = False
+                orig_discard = session.transport.discard_pending_audio
+
+                def spy_discard() -> None:
+                    nonlocal discard_called
+                    discard_called = True
+                    orig_discard()
+
+                monkeypatch.setattr(session.transport, "discard_pending_audio", spy_discard)
+
+                output_queue.put(_pcm_bytes(256))
+                session_end_out = PipelineControlMessage(SESSION_END.kind, session_id=conn_id)
+                output_queue.put(session_end_out)
+
+                session_end_prompt = PipelineControlMessage(SESSION_END.kind, session_id=conn_id)
+                req = GenerateResponseRequest(runtime_config=service._state(conn_id).runtime_config)
+                text_prompt_queue.put(req)
+                text_prompt_queue.put(session_end_prompt)
+
+                # Trigger barge-in via SpeechStartedEvent with interrupt_response=True
+                # Also place SpeechStoppedEvent behind it
+                text_output_queue.put(SpeechStartedEvent(interrupt_response=True))
+                text_output_queue.put(SpeechStoppedEvent())
+
+                types: set[str] = set()
+                for _ in range(5):
+                    types.add(ws.receive_json()["type"])
+                    if (
+                        "input_audio_buffer.speech_started" in types
+                        and "response.done" in types
+                        and "input_audio_buffer.speech_stopped" in types
+                    ):
+                        break
+
+                assert "input_audio_buffer.speech_started" in types
+                assert "response.done" in types
+                assert "input_audio_buffer.speech_stopped" in types
+
+                assert discard_called
+                assert not response_playing.is_set()
+                # SESSION_END survived in output_queue and was consumed by send loop
+                deadline = time.monotonic() + 1
+                while not session.drained.is_set() and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                assert session.drained.is_set()
+
+                prompt_items: list[object] = []
+                while not text_prompt_queue.empty():
+                    prompt_items.append(text_prompt_queue.get_nowait())
+                assert session_end_prompt in prompt_items
+                assert not any(isinstance(x, GenerateResponseRequest) for x in prompt_items)
 
     def test_admitted_turn_cancels_pending_implicit_response(self, setup):
         app, service, _, output_queue, text_output_queue, _, _, response_playing, cancel_scope = setup
