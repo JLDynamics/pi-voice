@@ -29,32 +29,23 @@ final class HeadlessBridge {
     func attach(session: SessionController, listenToStdin: Bool = true) {
         self.session = session
         spokenItemId = nil
-        let priorFinal = session.backend.onUserFinal
-        session.backend.onUserFinal = { [weak self] text, itemId in
-            priorFinal?(text, itemId)
+
+        session.onHeard = { [weak self] text, itemId in
             self?.emit(["type": "heard", "text": text, "item_id": itemId ?? ""])
         }
-        let priorAgentDelta = session.backend.onAgentDelta
-        session.backend.onAgentDelta = { [weak self] text in
-            priorAgentDelta?(text)
+        session.onSpokenDelta = { [weak self] text in
             guard let self, !text.isEmpty else { return }
             let id = self.spokenItemId ?? UUID().uuidString
             self.spokenItemId = id
             self.emit(["type": "spoken_delta", "text": text, "item_id": id])
         }
-        let priorAgentDone = session.backend.onAgentDone
-        session.backend.onAgentDone = { [weak self] in
-            priorAgentDone?()
+        session.onAgentDone = { [weak self] in
             self?.spokenItemId = nil
         }
-        let priorSpeech = session.backend.onUserSpeechStarted
-        session.backend.onUserSpeechStarted = { [weak self] in
-            priorSpeech?()
+        session.onSpeechStarted = { [weak self] in
             self?.emit(["type": "speech_started"])
         }
-        let priorState = session.backend.onState
-        session.backend.onState = { [weak self] state in
-            priorState?(state)
+        session.onStateChanged = { [weak self] state in
             switch state {
             case .listening:
                 guard let self, !self.announcedReady else { return }
@@ -66,20 +57,19 @@ final class HeadlessBridge {
                 break
             }
         }
-        if let headless = session.backend as? HeadlessBackend {
-            headless.onSpoken = { [weak self] text in
-                guard let self else { return }
-                let id = self.spokenItemId ?? UUID().uuidString
-                self.spokenItemId = nil
-                self.emit(["type": "spoken", "text": text, "item_id": id])
-            }
-            headless.onAskPi = { [weak self] id, brief in
-                self?.emit(["type": "work", "id": id, "brief": brief])
-            }
-            headless.onStopPi = { [weak self] in
-                self?.emit(["type": "stop_work"])
-            }
+        session.onSpoken = { [weak self] text in
+            guard let self else { return }
+            let id = self.spokenItemId ?? UUID().uuidString
+            self.spokenItemId = nil
+            self.emit(["type": "spoken", "text": text, "item_id": id])
         }
+        session.onAskPi = { [weak self] id, brief in
+            self?.emit(["type": "work", "id": id, "brief": brief])
+        }
+        session.onStopPi = { [weak self] in
+            self?.emit(["type": "stop_work"])
+        }
+
         if listenToStdin {
             listenStdin()
         }
@@ -141,14 +131,14 @@ final class HeadlessBridge {
         if type == "user" {
             let text = object["text"] as? String ?? ""
             session?.interrupt()
-            (session?.backend as? HeadlessBackend)?.ingestUserText(text)
+            session?.ingestUserText(text)
             return
         }
         if type == "result" {
             let id = object["id"] as? String ?? ""
             let speak = object["speak"] as? String ?? ""
             let full = object["full"] as? String ?? speak
-            (session?.backend as? HeadlessBackend)?.postResult(id: id, speak: speak, full: full)
+            session?.postResult(id: id, speak: speak, full: full)
             return
         }
         if type == "job_update" {
@@ -156,7 +146,7 @@ final class HeadlessBridge {
             let status = object["status"] as? String ?? ""
             let note = object["note"] as? String
             guard !id.isEmpty, !status.isEmpty else { return }
-            (session?.backend as? HeadlessBackend)?.updatePiJob(id: id, status: status, note: note)
+            session?.updatePiJob(id: id, status: status, note: note)
         }
     }
 

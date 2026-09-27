@@ -141,14 +141,4 @@ final class PCMBridge: @unchecked Sendable {
         return out
     }
 
-    func rmsLevel(_ buffer: AVAudioPCMBuffer) -> Float {
-        guard let ch = buffer.floatChannelData?[0] else { return 0 }
-        let n = Int(buffer.frameLength)
-        guard n > 0 else { return 0 }
-        var sum: Float = 0
-        for i in 0..<n { sum += ch[i] * ch[i] }
-        let rms = (sum / Float(n)).squareRoot()
-        let db = 20 * log10(max(rms, 0.000_001))
-        return max(0, min(1, (db + 50) / 50))
-    }
 }

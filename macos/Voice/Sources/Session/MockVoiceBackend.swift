@@ -1,17 +1,10 @@
 import Foundation
 
-/// Replays a scripted conversation on a timer, with fake audio levels.
-///
-/// Build the entire interface against this before wiring up any real service:
-/// every state in SPEC.md section 6 is reachable on demand, which is not true
-/// once a network is involved. Keep it after you ship — it is how you test the
-/// states you cannot reproduce when you want them.
+/// Replays a scripted conversation for session and bridge tests.
 @MainActor
 final class MockVoiceBackend: VoiceBackend, HeadlessBackend {
 
     var onState: ((SessionState) -> Void)?
-    var onInputLevel: ((Float) -> Void)?
-    var onOutputLevel: ((Float) -> Void)?
     var onUserSpeechStarted: (() -> Void)?
     var onTurnDropped: (() -> Void)?
     var onUserFinal: ((String, String?) -> Void)?
@@ -19,7 +12,6 @@ final class MockVoiceBackend: VoiceBackend, HeadlessBackend {
     var onAgentDone: (() -> Void)?
     var onToolActive: ((String) -> Void)?
     var onToolDone: ((String, String) -> Void)?
-    var onAudioStatus: ((String?) -> Void)?
     var onToolsCancelled: (() -> Void)?
     var onSpoken: ((String) -> Void)?
     var onAskPi: ((String, String) -> Void)?
@@ -42,6 +34,12 @@ final class MockVoiceBackend: VoiceBackend, HeadlessBackend {
         piJobUpdates.append((id: id, status: status, note: note))
     }
 
+    var historyMessages: [(role: String, text: String, name: String?)] = []
+
+    func setHistory(_ messages: [(role: String, text: String, name: String?)]) {
+        historyMessages = messages
+    }
+
     private struct Exchange {
         let said: String
         let reply: String
@@ -55,28 +53,19 @@ final class MockVoiceBackend: VoiceBackend, HeadlessBackend {
     ]
 
     private var running: Task<Void, Never>?
-    private var levels: Task<Void, Never>?
-    private var muted = false
 
     func start() async throws {
         onState?(.connecting)
         try? await Task.sleep(nanoseconds: 700_000_000)
-        startLevels()
         running = Task { await self.play() }
     }
 
     func stop() async {
         running?.cancel(); running = nil
-        levels?.cancel(); levels = nil
-        onInputLevel?(0)
-        onOutputLevel?(0)
         onState?(.idle)
     }
 
-    func setMuted(_ muted: Bool) {
-        self.muted = muted
-        if muted { onInputLevel?(0) }
-    }
+    func setMuted(_ muted: Bool) {}
 
     func interrupt() {
         interruptCount += 1
@@ -115,19 +104,4 @@ final class MockVoiceBackend: VoiceBackend, HeadlessBackend {
         if !Task.isCancelled { onState?(.listening) }
     }
 
-    /// Plausible-looking levels so the meter and the orb ring can be judged.
-    private func startLevels() {
-        levels = Task {
-            var phase: Float = 0
-            while !Task.isCancelled {
-                phase += 0.28
-                let wave = (sin(phase) + 1) / 2
-                let jitter = Float.random(in: 0...0.35)
-                let level = min(1, wave * 0.6 + jitter)
-                if !self.muted { self.onInputLevel?(level) }
-                self.onOutputLevel?(min(1, wave * 0.5 + Float.random(in: 0...0.3)))
-                try? await Task.sleep(nanoseconds: 33_000_000)   // ~30 Hz
-            }
-        }
-    }
 }
