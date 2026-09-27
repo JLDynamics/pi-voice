@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  quality:
+    runs-on: macos-14
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v9.0.0
+        with:
+          version: "latest"
+      - run: uv sync --frozen --no-default-groups --group dev
+      - run: uv run python -c "import nltk; nltk.download('punkt_tab')"
+      - name: Ruff
+        run: uv run ruff check src/ tests/
+      - name: Format
+        run: uv run ruff format --check src/ tests/
+      - name: Mypy
+        run: uv run mypy src/
+      - name: Tests
+        run: uv run pytest tests/ -q
+
+  package:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v9.0.0
+        with:
+          version: "latest"
+      - run: uv build
+      - run: uvx twine check --strict dist/*
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist
+          path: dist/*
+
+  install-smoke:
+    needs: package
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7.0.0
+        with:
+          python-version: "3.11"
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist
+      - run: python -m venv .venv-smoke
+      - run: .venv-smoke/bin/python -m pip install dist/chatbot-*.whl
+      - run: .venv-smoke/bin/python -m pip check
+      - run: PATH="$PWD/.venv-smoke/bin:$PATH" .venv-smoke/bin/python tests/install_smoke.py

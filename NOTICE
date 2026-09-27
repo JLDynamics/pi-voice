@@ -1,0 +1,11 @@
+chatbot
+Copyright 2025 JLDynamics
+
+This product is a fork of Hugging Face's "speech-to-speech"
+(https://github.com/huggingface/speech-to-speech):
+
+  Copyright 2024 The HuggingFace Inc. team
+
+Both the upstream project and this fork are licensed under the Apache
+License, Version 2.0. The full license text and the upstream copyright
+notice are retained in LICENSE.

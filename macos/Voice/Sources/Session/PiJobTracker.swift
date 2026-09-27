@@ -1,0 +1,254 @@
+import Foundation
+
+/// Luna-side mirror of Pi's job lifecycle.
+///
+/// Luna's tools run in Voice.app while the truth (bound, idle, branch) lives
+/// in the Pi extension. The extension pushes `job_update` lines over stdio as
+/// phases change; this tracker folds them into queryable state so `pi_status`
+/// and `pi_results` answer locally with no round trip.
+///
+/// Pure value semantics and injected `now` throughout so RuntimeTests can
+/// cover it without a backend.
+struct PiJobTracker {
+    enum State: String {
+        case queued
+        case working
+        case done
+        case stopped
+        case superseded
+        case dropped
+        case failed
+    }
+
+    struct Job {
+        var id: String
+        var brief: String
+        var state: State
+        var startedAt: Date
+        var updatedAt: Date
+        var lastNote: String?
+    }
+
+    struct StoredResult {
+        var id: String
+        var brief: String
+        var text: String
+        var settledAt: Date
+    }
+
+    static let maxResults = 10
+    static let statusExcerpt = 140
+    static let defaultPageLimit = 1500
+    static let maxPageLimit = 4000
+    static let journalFileName = "pi-voice.jobs.jsonl"
+
+    static func shouldSpeakProgress(elapsed: TimeInterval, changed: Bool) -> Bool {
+        (changed && elapsed >= 8) || elapsed >= 20
+    }
+
+    private(set) var jobs: [String: Job] = [:]
+    private(set) var order: [String] = []
+    private(set) var activeId: String?
+    private(set) var results: [StoredResult] = []
+    /// Latest job to reach a terminal state. Reported by `pi_status` when
+    /// there is nothing active and no finished result — the difference
+    /// between "Pi failed" and "nothing ever started".
+    private(set) var lastTerminal: Job?
+
+    var hasActive: Bool {
+        guard let id = activeId, let job = jobs[id] else { return false }
+        return job.state == .queued || job.state == .working
+    }
+
+    /// Record a fresh `ask_pi`. Never supersedes locally: the extension owns
+    /// that decision (it can drop the new work, e.g. while muted) and reports
+    /// it back via `job_update`. Superseding here would strand a phantom job
+    /// whenever the drop path runs.
+    mutating func ask(id: String, brief: String, now: Date = Date()) {
+        jobs[id] = Job(id: id, brief: brief, state: .queued, startedAt: now, updatedAt: now, lastNote: nil)
+        order.append(id)
+        if order.count > 64 { order.removeFirst(order.count - 64) }
+        activeId = id
+    }
+
+    /// Fold an extension `job_update` into the mirror. Terminal states stick:
+    /// a stale `working` arriving after a supersede must not resurrect the job.
+    mutating func update(id: String, state: State, note: String?, now: Date = Date()) {
+        guard var job = jobs[id] else { return }
+        if isTerminal(job.state) { return }
+        job.state = state
+        job.updatedAt = now
+        if let note = note?.trimmingCharacters(in: .whitespacesAndNewlines), !note.isEmpty {
+            job.lastNote = String(note.prefix(200))
+        }
+        jobs[id] = job
+        if isTerminal(state) {
+            lastTerminal = job
+            if activeId == id { activeId = nil }
+        }
+    }
+
+    private func isTerminal(_ state: State) -> Bool {
+        switch state {
+        case .queued, .working:
+            return false
+        case .done, .stopped, .superseded, .dropped, .failed:
+            return true
+        }
+    }
+
+    /// Cache a finished result for `pi_results` re-reads. Unknown ids (an older
+    /// bridge) still store under their id with an empty brief.
+    mutating func finish(id: String, brief: String? = nil, text: String, now: Date = Date()) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            update(id: id, state: .done, note: nil, now: now)
+            return
+        }
+        let storedBrief = brief ?? jobs[id]?.brief ?? ""
+        if var job = jobs[id] {
+            job.state = .done
+            job.updatedAt = now
+            jobs[id] = job
+            lastTerminal = job
+        }
+        results.append(StoredResult(
+            id: id,
+            brief: storedBrief,
+            text: trimmed,
+            settledAt: now
+        ))
+        if results.count > Self.maxResults {
+            results.removeFirst(results.count - Self.maxResults)
+        }
+        if activeId == id { activeId = nil }
+    }
+
+    /// Payload for `pi_status`: what Pi is doing now, or the last finished job.
+    func statusPayload(now: Date = Date()) -> [String: Any] {
+        if let id = activeId, let job = jobs[id],
+           job.state == .queued || job.state == .working {
+            var payload: [String: Any] = [
+                "status": job.state == .working ? "working" : "queued",
+                "id": job.id,
+                "brief": Self.excerpt(job.brief, Self.statusExcerpt),
+                "elapsed_s": max(0, Int(now.timeIntervalSince(job.startedAt))),
+            ]
+            if let note = job.lastNote, !note.isEmpty {
+                payload["detail"] = note
+            }
+            return payload
+        }
+        if let terminal = lastTerminal {
+            var info: [String: Any] = [
+                "id": terminal.id,
+                "brief": Self.excerpt(terminal.brief, Self.statusExcerpt),
+                "ago_s": max(0, Int(now.timeIntervalSince(terminal.updatedAt))),
+                "outcome": terminal.state.rawValue,
+            ]
+            if let note = terminal.lastNote, !note.isEmpty {
+                info["detail"] = note
+            }
+            return ["status": "idle", "last": info]
+        }
+        if let last = results.last {
+            return [
+                "status": "idle",
+                "last": [
+                    "id": last.id,
+                    "brief": Self.excerpt(last.brief, Self.statusExcerpt),
+                    "ago_s": max(0, Int(now.timeIntervalSince(last.settledAt))),
+                    "outcome": "done",
+                ] as [String: Any],
+            ]
+        }
+        return ["status": "idle"]
+    }
+
+    /// Paged payload for `pi_results`. Defaults to the most recent result;
+    /// unknown ids answer with the ids Luna can actually ask for.
+    func resultsPayload(id: String?, cursor: Int, limit: Int) -> [String: Any] {
+        let target = id?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let stored: StoredResult?
+        if let target, !target.isEmpty {
+            stored = results.first { $0.id == target }
+        } else {
+            stored = results.last
+        }
+        guard let stored else {
+            if let target, !target.isEmpty {
+                return [
+                    "error": "unknown_id",
+                    "ids": results.suffix(5).map { $0.id },
+                ]
+            }
+            return ["error": "no_results"]
+        }
+        let text = stored.text
+        let start = max(0, min(cursor, text.count))
+        let page = max(1, min(limit <= 0 ? Self.defaultPageLimit : limit, Self.maxPageLimit))
+        let from = text.index(text.startIndex, offsetBy: start, limitedBy: text.endIndex) ?? text.endIndex
+        let to = text.index(from, offsetBy: page, limitedBy: text.endIndex) ?? text.endIndex
+        let next = text.distance(from: text.startIndex, to: to)
+        return [
+            "id": stored.id,
+            "brief": Self.excerpt(stored.brief, Self.statusExcerpt),
+            "total_chars": text.count,
+            "cursor": next,
+            "done": to == text.endIndex,
+            "text": String(text[from..<to]),
+        ]
+    }
+
+    static func excerpt(_ value: String, _ max: Int) -> String {
+        let collapsed = value
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+        guard collapsed.count > max else { return collapsed }
+        return String(collapsed.prefix(max)).trimmingCharacters(in: .whitespaces) + "…"
+    }
+
+    /// Compact elapsed for status payloads is seconds; this is the human form.
+    static func elapsedString(since: Date, now: Date) -> String {
+        let seconds = max(0, Int(now.timeIntervalSince(since)))
+        if seconds < 60 { return "\(seconds)s" }
+        return "\(seconds / 60)m\(seconds % 60)s"
+    }
+
+    // MARK: - Journal
+
+    static func journalLine(now: Date, event: String, id: String, brief: String, extra: [String: Any] = [:]) -> String {
+        var object: [String: Any] = [
+            "t": ISO8601DateFormatter().string(from: now),
+            "event": event,
+            "id": id,
+            "brief": excerpt(brief, statusExcerpt),
+        ]
+        for (key, value) in extra { object[key] = value }
+        guard let data = try? JSONSerialization.data(withJSONObject: object),
+              let line = String(data: data, encoding: .utf8) else { return "" }
+        return line
+    }
+
+    /// Append one JSON line, trimming the file back to half once it passes
+    /// maxBytes. A diagnostic log ("what did Pi say earlier?"), not the
+    /// re-read path — `pi_results` serves from memory.
+    static func appendJournal(directory: URL, line: String, maxBytes: Int = 262_144) {
+        guard !line.isEmpty else { return }
+        let url = directory.appendingPathComponent(journalFileName)
+        let data = Data((line + "\n").utf8)
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            try? data.write(to: url)
+            return
+        }
+        guard let handle = try? FileHandle(forWritingTo: url) else { return }
+        defer { try? handle.close() }
+        _ = try? handle.seekToEnd()
+        try? handle.write(contentsOf: data)
+        guard let size = try? handle.offset(), size > maxBytes,
+              let all = try? Data(contentsOf: url), all.count > maxBytes else { return }
+        let tail = all.suffix(maxBytes / 2)
+        guard let newline = tail.firstIndex(of: 0x0A) else { return }
+        try? Data(tail[tail.index(after: newline)...]).write(to: url)
+    }
+}
