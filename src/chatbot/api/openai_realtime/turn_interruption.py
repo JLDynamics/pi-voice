@@ -1,4 +1,4 @@
-"""Single-writer barge-in flush for typed turn admissions."""
+"""Shared turn-queue flush for barge-in and client response.cancel."""
 
 from __future__ import annotations
 

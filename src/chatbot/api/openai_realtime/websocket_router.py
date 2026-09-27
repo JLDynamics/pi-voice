@@ -24,9 +24,6 @@ from chatbot.api.openai_realtime.queue_flush import (
     flush_queue,
     is_audio_done,
 )
-from chatbot.api.openai_realtime.queue_flush import keep_audio_sentinel as keep_audio_sentinel
-from chatbot.api.openai_realtime.queue_flush import keep_session_end as keep_session_end
-from chatbot.api.openai_realtime.queue_flush import keep_user_text_event as keep_user_text_event
 from chatbot.api.openai_realtime.service import (
     ResponseSpeakEvent,
     build_error_event,
