@@ -1,28 +1,14 @@
 import Foundation
-import Combine
 
 enum SessionState: Equatable {
     case idle
     case connecting
     case listening
     /// The user's turn ended and the model is working (transcribing,
-    /// reasoning, running a search) but has not started speaking yet.
+    /// reasoning, running a tool) but has not started speaking yet.
     case thinking
     case agentSpeaking
     case failed(String)
-}
-
-/// Mic/speaker meters update ~30 Hz. Keep them off SessionController so the
-/// rest of the panel (buttons, settings, transcript) does not rebuild every tick.
-@MainActor
-final class AudioLevels: ObservableObject {
-    @Published var input: Float = 0
-    @Published var output: Float = 0
-
-    func reset() {
-        input = 0
-        output = 0
-    }
 }
 
 struct Turn: Identifiable, Equatable {
@@ -55,14 +41,10 @@ public struct ChatMessage: Codable, Equatable {
     }
 }
 
-/// The swappable half. Implement this against whatever realtime voice service you
-/// choose; nothing above this line touches a network. Build the interface against
-/// MockVoiceBackend first — see README.
+/// Events and operations shared by the live backend and the runtime test backend.
 @MainActor
 protocol VoiceBackend: AnyObject {
     var onState: ((SessionState) -> Void)? { get set }
-    var onInputLevel: ((Float) -> Void)? { get set }        // 0...1, ~30 Hz
-    var onOutputLevel: ((Float) -> Void)? { get set }       // 0...1, ~30 Hz
     /// The user began speaking. Drives the talking indicator, which stands in
     /// for a live transcript, which the pipeline no longer produces.
     var onUserSpeechStarted: (() -> Void)? { get set }
@@ -75,7 +57,6 @@ protocol VoiceBackend: AnyObject {
     /// (tool name, short result summary) — the summary is recorded in the
     /// transcript so later turns can see what a tool actually returned.
     var onToolDone: ((String, String) -> Void)? { get set }
-    var onAudioStatus: ((String?) -> Void)? { get set }
     var onToolsCancelled: (() -> Void)? { get set }
 
     func start() async throws
@@ -97,40 +78,38 @@ extension VoiceBackend {
     func speak(_ text: String) {}
 }
 
-/// What the interface observes. Owns the transcript and the visible state; the
-/// backend only feeds it events.
+/// Coordinates session lifecycle and conversation history for the headless voice assistant.
+/// The visible UI lives in Pi; SessionController manages backend connection, audio mute,
+/// interruption, and transcript history replay.
 @MainActor
-final class SessionController: ObservableObject {
+final class SessionController {
 
-    @Published private(set) var state: SessionState = .idle
-    @Published private(set) var turns: [Turn] = []
-    /// True from the moment speech is detected until the turn's text is painted
-    /// or dropped. Drives the talking indicator that stands in for a live
-    /// transcript: streaming ASR text necessarily revises itself, so the panel
-    /// shows that you are talking rather than an unstable guess at the words.
-    @Published private(set) var userSpeaking = false
-    @Published private(set) var activeTool: String?
-    let levels = AudioLevels()
+    private(set) var state: SessionState = .idle
+    private(set) var turns: [Turn] = []
+    private(set) var userSpeaking = false
+    private(set) var activeTool: String?
+    private(set) var isMuted = false
 
-    /// A finalized transcript waiting for its turn to be over. Pausing mid-turn
-    /// makes the server finalize each revision, so painting every one made the
-    /// bubble rewrite itself while the user was still talking. Revisions
-    /// overwrite this; it is painted once, when the turn settles.
+    // Direct event callbacks for HeadlessBridge or other session observers
+    var onStateChanged: ((SessionState) -> Void)?
+    var onSpeechStarted: (() -> Void)?
+    var onHeard: ((String, String?) -> Void)?
+    var onSpokenDelta: ((String) -> Void)?
+    var onAgentDone: (() -> Void)?
+    var onSpoken: ((String) -> Void)?
+    var onAskPi: ((String, String) -> Void)?
+    var onStopPi: (() -> Void)?
+
     private var pendingUserText: String?
     private var pendingUserItemId: String?
-    @Published private(set) var isMuted = false
-
-    /// Shown as one line in the header. Cleared on the next successful start.
-    @Published private(set) var errorText: String?
-    @Published private(set) var audioStatus: String?
+    private var errorText: String?
     private var userRows: [String: UUID] = [:]
     private var userMessages: [String: Int] = [:]
 
-    // MARK: - Transcript state
+    // MARK: - Conversation history
     //
-    // The running conversation is still tracked here so a turn can be revised
-    // and history replayed to the backend. It is no longer persisted: the
-    // sidecar that stored saved chats and personal memory was removed.
+    // The running conversation is tracked here so turns can be revised during
+    // pauses and conversation history can be replayed to the backend on connect.
 
     private var messages: [ChatMessage] = []
     private var pendingAgentText = ""
@@ -159,42 +138,32 @@ final class SessionController: ObservableObject {
             guard let self else { return }
             self.state = state
             if case .failed(let message) = state { self.errorText = message }
+            self.onStateChanged?(state)
         }
         backend.onUserSpeechStarted = { [weak self] in
             guard let self else { return }
             self.userSpeaking = true
             self.markUserActivity()
+            self.onSpeechStarted?()
         }
         backend.onTurnDropped = { [weak self] in
-            // The server finalized this turn but will not answer it. Whatever it
-            // chose to send is all we will get, so paint it and stop indicating.
             self?.flushPendingUser()
             self?.userSpeaking = false
         }
-        backend.onInputLevel = { [weak self] level in self?.levels.input = level }
-        backend.onOutputLevel = { [weak self] level in self?.levels.output = level }
-
-        backend.onAudioStatus = { [weak self] note in self?.audioStatus = note }
-        backend.onToolsCancelled = { [weak self] in self?.activeTool = nil }
         backend.onUserFinal = { [weak self] text, itemId in
             guard let self else { return }
             let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty else { return }
-            // A final for a different item means the held turn is definitively
-            // over, so it can be painted before this one starts being held.
             if let held = self.pendingUserItemId, held != itemId {
                 self.flushPendingUser()
             }
             self.pendingUserText = trimmed
             self.pendingUserItemId = itemId
             self.markUserActivity()
+            self.onHeard?(text, itemId)
         }
-
-        // Deltas stream into a single agent turn rather than appending rows.
         backend.onAgentDelta = { [weak self] chunk in
             guard let self else { return }
-            // The agent is answering this turn, so the turn is settled: paint
-            // the user's words before the reply lands under them.
             self.flushPendingUser()
             self.userTurnOpen = false
             self.pendingAgentText += chunk
@@ -204,16 +173,17 @@ final class SessionController: ObservableObject {
                 self.agentTurnOpen = true
                 self.append(Turn(speaker: .agent, text: chunk))
             }
+            self.onSpokenDelta?(chunk)
         }
         backend.onAgentDone = { [weak self] in
             guard let self else { return }
-            // A reply that produced no text still settles the turn.
             self.flushPendingUser()
             self.agentTurnOpen = false
             self.userTurnOpen = false
             let text = self.pendingAgentText.trimmingCharacters(in: .whitespacesAndNewlines)
             self.pendingAgentText = ""
             if !text.isEmpty { self.recordAssistant(text) }
+            self.onAgentDone?()
         }
         backend.onToolActive = { [weak self] name in
             self?.flushPendingUser()
@@ -225,13 +195,21 @@ final class SessionController: ObservableObject {
             }
             self?.activeTool = desc
         }
+        backend.onToolsCancelled = { [weak self] in self?.activeTool = nil }
         backend.onToolDone = { [weak self] name, summary in
             self?.activeTool = nil
-            // replayHistory already renders a "tool" turn as "[Earlier I used
-            // X] ..." but nothing ever wrote one, so the model's own history
-            // showed it narrating actions with no record of the result. That
-            // gap is what let it describe work it had not managed to do.
             self?.recordTool(name: name, summary: summary)
+        }
+        if let headless = backend as? HeadlessBackend {
+            headless.onSpoken = { [weak self] text in
+                self?.onSpoken?(text)
+            }
+            headless.onAskPi = { [weak self] id, brief in
+                self?.onAskPi?(id, brief)
+            }
+            headless.onStopPi = { [weak self] in
+                self?.onStopPi?()
+            }
         }
     }
 
@@ -318,22 +296,18 @@ final class SessionController: ObservableObject {
         applyIdleChrome()
         if isTransitioning {
             await backend.stop()
-            await flushSave()
             return
         }
         isTransitioning = true
         defer { isTransitioning = false }
         await backend.stop()
-        await flushSave()
     }
 
-    /// Mute, Stop, and hide must paint idle before teardown or a sidecar save.
     private func applyIdleChrome() {
         flushPendingUser()
         userSpeaking = false
         agentTurnOpen = false
         userTurnOpen = false
-        levels.reset()
         activeTool = nil
         state = .idle
     }
@@ -342,18 +316,30 @@ final class SessionController: ObservableObject {
         guard isLive else { return }
         isMuted = muted
         backend.setMuted(muted)
-        if muted { levels.input = 0 }
     }
 
     func speak(_ text: String) {
         backend.speak(text)
     }
 
-    /// Only wired up if Stop is a barge-in rather than an end — see SPEC.md §7.
     func interrupt() {
         guard isLive, state != .connecting else { return }
         backend.interrupt()
         activeTool = nil
+    }
+
+    // MARK: - Headless backend operations
+
+    func ingestUserText(_ text: String) {
+        (backend as? HeadlessBackend)?.ingestUserText(text)
+    }
+
+    func postResult(id: String, speak: String, full: String) {
+        (backend as? HeadlessBackend)?.postResult(id: id, speak: speak, full: full)
+    }
+
+    func updatePiJob(id: String, status: String, note: String?) {
+        (backend as? HeadlessBackend)?.updatePiJob(id: id, status: status, note: note)
     }
 
     // MARK: - Transcript
@@ -537,9 +523,4 @@ final class SessionController: ObservableObject {
         guard !t.isEmpty else { return }
         messages.append(ChatMessage(role: "assistant", text: t))
     }
-
-    /// Conversations were persisted to the sidecar; nothing stores them now.
-    /// Kept as a no-op so the end/teardown paths still read as "flush, then
-    /// stop" and gain a store again without re-threading every call site.
-    func flushSave() async {}
 }
