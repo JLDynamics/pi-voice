@@ -19,6 +19,7 @@ from starlette.websockets import WebSocketState
 
 import chatbot.api.openai_realtime.websocket_router as router_module
 from chatbot.api.openai_realtime.pipeline_unit import PipelineUnit
+from chatbot.api.openai_realtime.queue_flush import keep_audio_sentinel, keep_user_text_event
 from chatbot.api.openai_realtime.service import CHUNK_SIZE_BYTES, RealtimeService
 from chatbot.api.openai_realtime.transports import WebSocketTransport
 from chatbot.api.openai_realtime.websocket_router import create_app
@@ -998,7 +999,7 @@ class TestDrainRelease:
         q.put(AssistantTextEvent(text="stale"))
         q.put(event)
 
-        router_module.flush_queue(q, preserve=router_module.keep_user_text_event)
+        router_module.flush_queue(q, preserve=keep_user_text_event)
 
         assert q.get_nowait() is event
         assert q.empty()
@@ -1010,6 +1011,6 @@ class TestDrainRelease:
         q.put(_pcm_bytes(10))
         q.put(PipelineControlMessage(SESSION_END.kind, session_id="sess_a"))
         q.put(_pcm_bytes(10))
-        router_module.flush_queue(q, preserve=router_module.keep_audio_sentinel)
+        router_module.flush_queue(q, preserve=keep_audio_sentinel)
         assert is_control_message(q.get_nowait(), SESSION_END.kind)
         assert q.empty()
