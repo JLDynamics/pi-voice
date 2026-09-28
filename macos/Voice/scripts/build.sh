@@ -23,35 +23,6 @@ cp "$ROOT/Resources/Info.plist" "$OUT/Contents/Info.plist"
 cp "$ROOT/Resources/Voice.entitlements" "$OUT/Contents/Resources/Voice.entitlements"
 printf '%s\n' "$(cd "$ROOT/../.." && pwd)" > "$OUT/Contents/Resources/RepositoryPath.txt"
 
-embed_app_icon() {
-  local logo="$ROOT/../../logo.png"
-  [[ -f "$logo" ]] || return 0
-  local work="$ROOT/build/iconwork"
-  rm -rf "$work"
-  mkdir -p "$work/Voice.iconset"
-  local square="$work/square.png"
-  local w h side
-  w="$(sips -g pixelWidth "$logo" | awk '/pixelWidth/ {print $2}')"
-  h="$(sips -g pixelHeight "$logo" | awk '/pixelHeight/ {print $2}')"
-  side="$w"
-  [[ "$h" -gt "$w" ]] && side="$h"
-  sips --padToHeightWidth "$side" "$side" "$logo" --out "$square" >/dev/null
-  local iconset="$work/Voice.iconset"
-  sips -z 16 16     "$square" --out "$iconset/icon_16x16.png" >/dev/null
-  sips -z 32 32     "$square" --out "$iconset/icon_16x16@2x.png" >/dev/null
-  sips -z 32 32     "$square" --out "$iconset/icon_32x32.png" >/dev/null
-  sips -z 64 64     "$square" --out "$iconset/icon_32x32@2x.png" >/dev/null
-  sips -z 128 128   "$square" --out "$iconset/icon_128x128.png" >/dev/null
-  sips -z 256 256   "$square" --out "$iconset/icon_128x128@2x.png" >/dev/null
-  sips -z 256 256   "$square" --out "$iconset/icon_256x256.png" >/dev/null
-  sips -z 512 512   "$square" --out "$iconset/icon_256x256@2x.png" >/dev/null
-  sips -z 512 512   "$square" --out "$iconset/icon_512x512.png" >/dev/null
-  sips -z 1024 1024 "$square" --out "$iconset/icon_512x512@2x.png" >/dev/null
-  iconutil -c icns "$iconset" -o "$OUT/Contents/Resources/AppIcon.icns"
-  rm -rf "$work"
-}
-embed_app_icon
-
 echo "Compiling ${#SOURCES[@]} Swift files → $BIN"
 xcrun swiftc \
   -sdk "$SDK" \
