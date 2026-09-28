@@ -79,6 +79,17 @@ def test_the_resampler_maps_48k_to_the_pipeline_rate():
     assert PIPELINE_SR * 0.98 <= out.size <= PIPELINE_SR * 1.02, "one second in, one second out"
 
 
+def test_leading_dash_is_passed_as_speech_not_an_option(tmp_path):
+    binary = tmp_path / "siri-tts"
+    binary.write_text(
+        "#!/bin/sh\n[ \"${10}\" = '--' ] || exit 2\n[ \"${11}\" = '- The rest is spoken.' ] || exit 3\nprintf '\\000\\000'\n"
+    )
+    binary.chmod(0o755)
+    handler = _handler()
+    handler.binary = binary
+    assert list(handler._stream("- The rest is spoken.", "en-US-F"))
+
+
 def test_registry_config_matches_the_setup_signature():
     """The registry strips the `siri_tts` prefix before calling setup()."""
     import inspect
@@ -123,6 +134,14 @@ def test_the_binary_streams_pcm_for_a_real_voice():
     assert audio.dtype == np.float32
     assert -1.0 <= float(audio.min()) and float(audio.max()) <= 1.0
     assert audio.size > MODEL_SR * 0.5, "a three-word sentence should exceed half a second"
+
+
+@needs_binary
+def test_the_binary_speaks_text_starting_with_a_dash():
+    handler = _handler()
+    handler.binary = BINARY
+    chunks = list(handler._stream("- The rest is spoken.", "en-US-F"))
+    assert sum(chunk.audio.size for chunk in chunks) > MODEL_SR * 0.5
 
 
 @needs_binary

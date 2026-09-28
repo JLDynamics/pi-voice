@@ -7,7 +7,7 @@ import type {
   SessionEntry,
 } from "@earendil-works/pi-coding-agent";
 import type { AutocompleteItem, Component } from "@earendil-works/pi-tui";
-import { clearOwnedLease, liveForeignOwner, reapOrphans, VoiceChild } from "./child.ts";
+import { clearOwnedLease, liveForeignOwner, reapOrphans, VoiceChild, type VoiceHistoryTurn } from "./child.ts";
 import { bindJob, jobIdFromText, jobPrompt, lastUserJobId, openJob, settleJob } from "./work.ts";
 
 export type ChildPid = number & { readonly brand: "ChildPid" };
@@ -140,6 +140,21 @@ export const WORK_SECTION = [
 
 const WIDGET_KEY = "pi-voice";
 const FACE_TYPE = "pi-voice-face";
+
+/** Final voice turns are already in Pi's session branch when /voice restarts. */
+export function voiceHistory(branch: SessionEntry[]): VoiceHistoryTurn[] {
+  const turns: VoiceHistoryTurn[] = [];
+  for (const entry of branch) {
+    if (entry.type !== "custom" || entry.customType !== FACE_TYPE) continue;
+    const data = entry.data as { kind?: string; text?: string } | undefined;
+    if (!data || typeof data.text !== "string") continue;
+    const role = data.kind === "heard" || data.kind === "heard-final" ? "user"
+      : data.kind === "spoken" || data.kind === "spoken-final" ? "assistant" : null;
+    const text = data.text.trim();
+    if (role && text) turns.push({ role, text: text.slice(0, 2000) });
+  }
+  return turns.slice(-20);
+}
 
 export function detectMuteChord(): "alt+m" | "ctrl+shift+m" {
   const term = `${process.env.TERM ?? ""}\n${process.env.TERM_PROGRAM ?? ""}`.toLowerCase();
@@ -726,10 +741,11 @@ export class Voice {
       return;
     }
     try {
+      const branch = (ctx ?? this.lastCtx)?.sessionManager?.getBranch?.() ?? [];
       this.child = VoiceChild.spawn((event) => {
         if (this.epoch !== epoch) return;
         this.feed(event, this.lastCtx ?? ctx);
-      });
+      }, voiceHistory(branch));
       if (this.pendingMute != null) this.child.setMuted(this.pendingMute);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);

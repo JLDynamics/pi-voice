@@ -1,4 +1,5 @@
 import AppKit
+import Foundation
 
 /// Voice has no window. Pi is the face; this process is only ears and mouth,
 /// talking NDJSON over stdio through ``HeadlessBridge``.
@@ -44,6 +45,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         setenv("VOICE_THINKER", "luna", 1)
+        if let raw = ProcessInfo.processInfo.environment["VOICE_HISTORY"],
+           let data = raw.data(using: .utf8),
+           let turns = try? JSONSerialization.jsonObject(with: data) as? [[String: String]] {
+            session.seedHistory(turns.compactMap { turn in
+                guard let role = turn["role"], let text = turn["text"] else { return nil }
+                return (role: role, text: text)
+            })
+        }
+        unsetenv("VOICE_HISTORY")
         // No Dock icon and no menu bar presence: this is a background audio bridge.
         NSApp.setActivationPolicy(.accessory)
         HeadlessBridge.shared.attach(session: session)

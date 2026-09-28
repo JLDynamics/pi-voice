@@ -133,6 +133,15 @@ final class SessionController {
         wire()
     }
 
+    func seedHistory(_ turns: [(role: String, text: String)]) {
+        guard !isLive else { return }
+        messages = turns.suffix(20).compactMap { turn in
+            guard (turn.role == "user" || turn.role == "assistant"),
+                  !turn.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+            return ChatMessage(role: turn.role, text: turn.text)
+        }
+    }
+
     private func wire() {
         backend.onState = { [weak self] state in
             guard let self else { return }

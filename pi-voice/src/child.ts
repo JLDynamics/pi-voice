@@ -38,9 +38,11 @@ export function stderrLogPath(pid: ChildPid): string {
   return join(process.env.TMPDIR || tmpdir(), `pi-voice.${pid}.stderr.log`);
 }
 
-export function headlessChildEnv(base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
-  return { ...base, VOICE_THINKER: "luna" };
+export function headlessChildEnv(base: NodeJS.ProcessEnv = process.env, history: VoiceHistoryTurn[] = []): NodeJS.ProcessEnv {
+  return { ...base, VOICE_THINKER: "luna", VOICE_HISTORY: JSON.stringify(history) };
 }
+
+export type VoiceHistoryTurn = { role: "user" | "assistant"; text: string };
 
 export class VoiceChild {
   readonly pid: ChildPid;
@@ -51,14 +53,14 @@ export class VoiceChild {
     this.proc = proc;
   }
 
-  static spawn(onEvent: (event: VoiceEvent) => void): VoiceChild {
+  static spawn(onEvent: (event: VoiceEvent) => void, history: VoiceHistoryTurn[] = []): VoiceChild {
     const bin = voiceBin();
     if (!existsSync(bin)) {
       throw new Error(`Voice binary missing. Build it with ${join(REPO_ROOT, "macos/Voice/scripts/build.sh")}`);
     }
     const proc = spawn(bin, ["--headless"], {
       stdio: ["pipe", "pipe", "pipe"],
-      env: headlessChildEnv(),
+      env: headlessChildEnv(process.env, history),
     });
     if (proc.pid == null) throw new Error("Voice spawn returned no pid");
     const pid = proc.pid as ChildPid;

@@ -462,6 +462,17 @@ struct RuntimeTests {
         assert(backend.historyMessages.contains { $0.role == "tool" && $0.name == "bash" && $0.text.contains("72 degrees") })
         assert(backend.historyMessages.contains { $0.role == "user" && $0.text.contains("and tomorrow") })
         assert(backend.historyMessages.contains { $0.role == "assistant" && $0.text.contains("Tomorrow will be sunny") })
+
+        let restartedBackend = MockVoiceBackend()
+        let restarted = SessionController(backend: restartedBackend)
+        restarted.seedHistory([
+            (role: "user", text: "We discussed AI news."),
+            (role: "assistant", text: "Yes, we discussed AI news."),
+        ])
+        await restarted.begin()
+        assert(restartedBackend.historyMessages.map(\.text) == [
+            "We discussed AI news.", "Yes, we discussed AI news."
+        ], "a new Voice process must replay Pi's saved turns")
     }
 
     @MainActor

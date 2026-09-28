@@ -100,6 +100,8 @@ Luna's tools under `--headless` are `ask_pi`, `stop_pi`, `pi_status`, and `pi_re
 
 Typing in Pi's composer input while voice is on routes directly to Luna as user text. Running `/voice stop` (or a second `/voice`) sends `quit`; Voice stops the launcher process it started, and the backend exits. Logs go to `/tmp/voice-service-startup.log`, `/tmp/chatbot-server.log`, and the extension's stderr log in `$TMPDIR` (`pi-voice.<pid>.stderr.log`).
 
+When `/voice` starts a new process in the same Pi session, the extension passes the last 20 final voice turns from Pi's branch in `VOICE_HISTORY`. Voice seeds its session transcript before connecting; `LiveVoiceBackend` replays those turns as `conversation.item.create` events. Draft transcript entries and Pi work entries are excluded.
+
 In interactive mode, `/voice` stays in Pi's ordinary terminal transcript. Luna's spoken deltas update one visible custom entry in place; a hidden final entry saves the completed text for replay. Pi shows its own native tool calls and answers. The installed Pi 0.87.1 renderer is repaired by `scripts/patch-pi-native-fold.mjs` so voice tool calls and answers start folded and open on click, and the folded answer shows writing/ready state. The script checks the bundle hash and keeps a restore backup.
 
 Architecture & purity: `step()` / `handleCommand()` in `voice.ts` and `work.ts` are pure reducers returning `{state, effects}`; the `Voice` class applies effects to the Pi API; `child.ts` owns the child process and the lease file (`$TMPDIR/pi-voice.lease.json` or `tmpdir()`), which blocks a second Pi window from running voice concurrently and reaps orphaned `--headless` Voice processes. Keep new logic in the reducer so it stays testable.

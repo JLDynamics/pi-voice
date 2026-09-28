@@ -18,6 +18,7 @@ import {
   stderrLogPath,
   strip,
   Voice,
+  voiceHistory,
   WORK_SECTION,
   type ChildPid,
   type Effect,
@@ -772,9 +773,25 @@ describe("parseLine", () => {
 });
 
 describe("spawn env / stderr log", () => {
+  it("replays only final voice turns from the current Pi branch", () => {
+    const face = (kind: string, text: string) => ({ type: "custom", customType: "pi-voice-face", data: { kind, text } });
+    const branch = [
+      face("heard-live", "draft"),
+      face("heard-final", "We discussed AI news."),
+      face("spoken-live", "partial"),
+      face("spoken-final", "Yes, AI news."),
+      face("work", "research"),
+    ] as SessionEntry[];
+    assert.deepEqual(voiceHistory(branch), [
+      { role: "user", text: "We discussed AI news." },
+      { role: "assistant", text: "Yes, AI news." },
+    ]);
+  });
+
   it("headless child is VOICE_THINKER=luna", () => {
-    const env = headlessChildEnv({ PATH: "/bin" });
+    const env = headlessChildEnv({ PATH: "/bin" }, [{ role: "user", text: "Earlier topic" }]);
     assert.equal(env.VOICE_THINKER, "luna");
+    assert.deepEqual(JSON.parse(env.VOICE_HISTORY!), [{ role: "user", text: "Earlier topic" }]);
     assert.equal(env.PATH, "/bin");
   });
 

@@ -147,6 +147,7 @@ class SiriTTSHandler(BaseTTSHandler):
             "pcm",
             "-o",
             "-",
+            "--",
             text,
         ]
         process = subprocess.Popen(
