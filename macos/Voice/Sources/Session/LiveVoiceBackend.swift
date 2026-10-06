@@ -240,7 +240,9 @@ final class LiveVoiceBackend: VoiceBackend, HeadlessBackend {
     }
 
     /// Extension-pushed job phase (`job_update` over stdio). Feeds the
-    /// `pi_status` mirror; never speaks on its own.
+    /// `pi_status` mirror; only `failed` speaks on its own. `dropped` stays
+    /// silent: the dispatch never reached Pi (muted), so there is no failure
+    /// to report.
     func updatePiJob(id: String, status: String, note: String?) {
         let state: PiJobTracker.State
         switch status {
@@ -259,7 +261,7 @@ final class LiveVoiceBackend: VoiceBackend, HeadlessBackend {
         if state == .stopped || state == .superseded || state == .dropped || state == .failed || state == .done {
             if !piJobs.hasActive { piProgressTask?.cancel(); piProgressTask = nil }
         }
-        if state == .failed || state == .dropped {
+        if state == .failed {
             let reason = note ?? "Pi could not complete the task"
             sendUserText("[PI] Task \(id) failed: \(reason). Explain briefly what remains unresolved.")
             requestFollowUpIfIdle()

@@ -1,6 +1,7 @@
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 import type { Effect, Job, ShortResult, Step, StepWorld, UserText, VoiceState, WorkId } from "./voice.ts";
 import { RESULT_MAX, strip } from "./voice.ts";
+import { workHistoryTurn } from "./history.ts";
 
 function keep(state: VoiceState, effects: Effect[] = []): Step {
   return { state, effects };
@@ -57,8 +58,22 @@ export function settleJob(state: VoiceState, world: StepWorld): Step {
   if (lastUserJobId(world.branch) !== state.job.id) {
     if (!hasJobMessage(world.branch, state.job.id)) return keep(state);
     const next: VoiceState = { ...state, job: { tag: "none" } };
+    const update: Effect = {
+      tag: "sendJobUpdate",
+      id: state.job.id,
+      status: "superseded",
+      note: "Another Pi request took over",
+    };
+    // Pi answered before the newer request took over: hand over what it found
+    // instead of dropping it silently. The superseded update itself stays
+    // silent; the result speaks and caches for pi_results like any answer.
+    const full = (answerForJob(world.branch, state.job.id) ?? "").trim();
+    const speak = fullResult(full);
+    if (!speak) return { state: next, effects: [update, paint(next, world.now)] };
     return { state: next, effects: [
-      { tag: "sendJobUpdate", id: state.job.id, status: "superseded", note: "Another Pi request took over" },
+      { tag: "postResult", id: state.job.id, speak, full },
+      update,
+      { tag: "recordTurn", turn: workHistoryTurn(state.job.brief, full), turnKind: "work" },
       paint(next, world.now),
     ] };
   }
@@ -80,7 +95,12 @@ export function settleJob(state: VoiceState, world: StepWorld): Step {
   const settled: Effect = { tag: "sendJobUpdate", id: state.job.id, status: "done" };
   return {
     state: next,
-    effects: [settled, { tag: "postResult", id: state.job.id, speak, full }, paint(next, world.now)],
+    effects: [
+      settled,
+      { tag: "postResult", id: state.job.id, speak, full },
+      { tag: "recordTurn", turn: workHistoryTurn(state.job.brief, full), turnKind: "work" },
+      paint(next, world.now),
+    ],
   };
 }
 

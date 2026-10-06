@@ -9,6 +9,21 @@ import type {
 import type { AutocompleteItem, Component } from "@earendil-works/pi-tui";
 import { clearOwnedLease, liveForeignOwner, reapOrphans, VoiceChild, type VoiceHistoryTurn } from "./child.ts";
 import { bindJob, jobIdFromText, jobPrompt, lastUserJobId, openJob, settleJob } from "./work.ts";
+import {
+  historyDbFile,
+  listConversations,
+  localWhen,
+  resolveConversation,
+  workHistoryTurn,
+  HistoryStore,
+  type TurnKind,
+} from "./history.ts";
+import {
+  boundHistory,
+  loadConversation,
+  newConversationId,
+  storeConversation,
+} from "./session.ts";
 
 export type ChildPid = number & { readonly brand: "ChildPid" };
 export type WorkId = string & { readonly brand: "WorkId" };
@@ -63,7 +78,9 @@ export type VoiceCommand =
   | { tag: "toggle" }
   | { tag: "stop" }
   | { tag: "setMic"; closed: boolean }
-  | { tag: "toggleMic" };
+  | { tag: "toggleMic" }
+  | { tag: "newConversation" }
+  | { tag: "resumeConversation"; selector: string | null };
 
 export type VoiceEvent =
   | { tag: "ready" }
@@ -99,6 +116,7 @@ export type Effect =
       note?: string;
     }
   | { tag: "abortWork" }
+  | { tag: "recordTurn"; turn: VoiceHistoryTurn; turnKind: TurnKind }
   | { tag: "paint"; strip: Strip | null }
   | { tag: "notify"; message: string; kind: "info" | "warning" | "error" }
   | { tag: "upsertFace"; id: string; kind: "heard" | "spoken" | "work"; text: string; final: boolean };
@@ -267,11 +285,17 @@ function elapsedShort(ms: number): string {
 
 export function parseSlash(args: string): VoiceCommand | { tag: "unknown"; raw: string } {
   const raw = args.trim();
-  const token = raw.split(/\s+/, 1)[0]?.toLowerCase() ?? "";
-  if (token === "" || token === "start") return { tag: "toggle" };
-  if (token === "stop") return { tag: "stop" };
-  if (token === "mute") return { tag: "toggleMic" };
-  if (token === "unmute") return { tag: "setMic", closed: false };
+  const [token, ...rest] = raw.split(/\s+/);
+  const head = token?.toLowerCase() ?? "";
+  if (head === "" || head === "start") return { tag: "toggle" };
+  if (head === "stop") return { tag: "stop" };
+  if (head === "mute") return { tag: "toggleMic" };
+  if (head === "unmute") return { tag: "setMic", closed: false };
+  if (head === "new") return { tag: "newConversation" };
+  if (head === "resume") {
+    const selector = rest.join(" ").trim();
+    return { tag: "resumeConversation", selector: selector || null };
+  }
   return { tag: "unknown", raw };
 }
 
@@ -314,8 +338,12 @@ export function step(state: VoiceState, event: VoiceEvent, world: StepWorld): St
     if (state.tag !== "on" || !state.streamingSpoken || !state.spokenItemId) return keep(state);
     const next: VoiceState = { ...state, interruptedSpokenId: state.spokenItemId,
       streamingSpoken: "", spokenItemId: null };
+    const cut = state.streamingSpoken.trim();
     return keep(next, [
-      { tag: "upsertFace", id: state.spokenItemId, kind: "spoken", text: state.streamingSpoken.trim(), final: true },
+      { tag: "upsertFace", id: state.spokenItemId, kind: "spoken", text: cut, final: true },
+      ...(cut ? [{ tag: "recordTurn" as const,
+        turn: { role: "assistant" as const, text: cut },
+        turnKind: (state.job.tag === "running" ? "progress" : "voice") as TurnKind }] : []),
     ]);
   }
 
@@ -375,6 +403,7 @@ export function step(state: VoiceState, event: VoiceEvent, world: StepWorld): St
         { tag: "interruptSpeech" },
         { tag: "injectUser", text },
         { tag: "upsertFace", id: `typed:${world.now}`, kind: "heard", text, final: true },
+        { tag: "recordTurn", turn: { role: "user", text }, turnKind: "voice" },
         { tag: "paint", strip: strip(next, world.now) },
       ],
     };
@@ -398,6 +427,7 @@ export function step(state: VoiceState, event: VoiceEvent, world: StepWorld): St
     const sameUtterance = state.heardPending !== null && itemId === state.heardItemId;
     if (state.heardPending && !sameUtterance) {
       effects.push({ tag: "upsertFace", id: state.heardItemId!, kind: "heard", text: state.heardPending, final: true });
+      effects.push({ tag: "recordTurn", turn: { role: "user", text: state.heardPending }, turnKind: "voice" });
     }
     const next: VoiceState = {
       ...state,
@@ -419,10 +449,16 @@ export function step(state: VoiceState, event: VoiceEvent, world: StepWorld): St
     const effects: Effect[] = [];
     if (state.heardPending) {
       effects.push({ tag: "upsertFace", id: state.heardItemId!, kind: "heard", text: state.heardPending, final: true });
+      effects.push({ tag: "recordTurn", turn: { role: "user", text: state.heardPending }, turnKind: "voice" });
     }
     const id = event.itemId || state.spokenItemId || `luna:${world.now}`;
     const next: VoiceState = { ...state, lastSpoken: text, streamingSpoken: "", spokenItemId: null, heardPending: null, heardItemId: null };
     effects.push({ tag: "upsertFace", id, kind: "spoken", text, final: true }, { tag: "paint", strip: strip(next, world.now) });
+    effects.push({
+      tag: "recordTurn",
+      turn: { role: "assistant", text },
+      turnKind: state.job.tag === "running" ? "progress" : "voice",
+    });
     return { state: next, effects };
   }
 
@@ -438,8 +474,11 @@ export function step(state: VoiceState, event: VoiceEvent, world: StepWorld): St
     const pending = state.heardPending;
     const ready = pending ? { ...state, heardPending: null, heardItemId: null } : state;
     const job = openJob(ready, event.id, event.brief, world);
+    const record: Effect[] = pending
+      ? [{ tag: "recordTurn", turn: { role: "user", text: pending }, turnKind: "voice" as TurnKind }]
+      : [];
     return pending
-      ? { state: job.state, effects: [{ tag: "upsertFace", id: state.heardItemId!, kind: "heard", text: pending, final: true }, ...job.effects] }
+      ? { state: job.state, effects: [{ tag: "upsertFace", id: state.heardItemId!, kind: "heard", text: pending, final: true }, ...record, ...job.effects] }
       : job;
   }
 
@@ -533,6 +572,9 @@ export class Voice {
   private pendingMute: boolean | undefined;
   private reapJob: Promise<string | undefined> | undefined;
   private thinkingRestore: string | undefined;
+  private store: HistoryStore | null = null;
+  private conversationId: string | null = null;
+  private historyWarned = false;
   private readonly finalFaceIds = new Set<string>();
   private readonly startedSpokenIds = new Set<string>();
   private readonly spokenTexts = new Map<string, string>();
@@ -549,6 +591,14 @@ export class Voice {
     const parsed = parseSlash(args);
     if (parsed.tag === "unknown") {
       ctx.ui.notify(`Unknown /voice argument: ${parsed.raw}`, "warning");
+      return;
+    }
+    if (parsed.tag === "newConversation") {
+      this.switchConversation(newConversationId(), ctx, "New voice conversation started.");
+      return;
+    }
+    if (parsed.tag === "resumeConversation") {
+      this.resumeConversation(parsed.selector, ctx);
       return;
     }
     if (parsed.tag === "toggle" && this.state.tag === "off") {
@@ -572,6 +622,8 @@ export class Voice {
       { value: "mute", label: "mute", description: "Mute Luna's mic" },
       { value: "unmute", label: "unmute", description: "Unmute Luna's mic" },
       { value: "stop", label: "stop", description: "Stop voice in this session" },
+      { value: "new", label: "new", description: "Start a fresh voice conversation" },
+      { value: "resume", label: "resume", description: "List or resume a past voice conversation" },
     ].filter((item) => item.value.startsWith(p));
   }
 
@@ -677,6 +729,19 @@ export class Voice {
         // voice line is unaffected: Luna keeps listening and talking through it.
         ctx?.abort();
         return;
+      case "recordTurn":
+        try {
+          this.store?.append(effect.turn, effect.turnKind);
+        } catch (error) {
+          // A write failure must not interrupt the call, but the user should
+          // know this call is not being saved.
+          if (!this.historyWarned) {
+            this.historyWarned = true;
+            const detail = error instanceof Error ? error.message : String(error);
+            ctx?.ui.notify(`Voice history is not being saved: ${detail}`, "warning");
+          }
+        }
+        return;
       case "paint":
         if (effect.strip) {
           const lines = [effect.strip.line1, effect.strip.line2];
@@ -742,15 +807,96 @@ export class Voice {
     }
     try {
       const branch = (ctx ?? this.lastCtx)?.sessionManager?.getBranch?.() ?? [];
+      const history = this.ensureStore(branch, ctx);
       this.child = VoiceChild.spawn((event) => {
         if (this.epoch !== epoch) return;
         this.feed(event, this.lastCtx ?? ctx);
-      }, voiceHistory(branch));
+      }, history, this.conversationId ? historyDbFile(this.conversationId) : undefined);
       if (this.pendingMute != null) this.child.setMuted(this.pendingMute);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       this.feed({ tag: "error", message }, ctx);
     }
+  }
+
+  /**
+   * Open this folder's conversation cabinet (creating it on first use) and
+   * return what Luna starts the call with: the cabinet replay, or Pi's own
+   * session branch while the cabinet is still empty. A fresh cabinet is
+   * seeded from the branch once, so upgrading keeps what Pi already saved.
+   */
+  private ensureStore(branch: SessionEntry[], ctx?: ExtensionContext): VoiceHistoryTurn[] {
+    const cwd = process.cwd();
+    if (!this.store || !this.conversationId) {
+      const resumed = loadConversation(cwd);
+      const id = resumed ?? newConversationId();
+      if (!resumed) storeConversation(cwd, id);
+      this.conversationId = id;
+      try {
+        this.store = HistoryStore.open(historyDbFile(id));
+        this.store.setMetaOnce("cwd", cwd);
+      } catch (error) {
+        // A damaged or locked cabinet must never brick /voice: fall back to
+        // Pi's session branch for this call and try the cabinet again next time.
+        this.store = null;
+        this.conversationId = null;
+        const detail = error instanceof Error ? error.message : String(error);
+        (ctx ?? this.lastCtx)?.ui.notify(`Voice history unavailable, using session only: ${detail}`, "warning");
+        return boundHistory(voiceHistory(branch));
+      }
+    }
+    const store = this.store;
+    if (store.count() === 0) {
+      for (const turn of voiceHistory(branch)) {
+        try {
+          store.append(turn, "voice");
+        } catch {
+          break; // seeding is best-effort; the call still works
+        }
+      }
+    }
+    const replay = store.loadReplay();
+    if (replay.length > 0) return boundHistory(replay);
+    return boundHistory(voiceHistory(branch));
+  }
+
+  private closeStore(): void {
+    try {
+      this.store?.close();
+    } catch {
+      // best-effort; a new store opens over it
+    }
+    this.store = null;
+    this.conversationId = null;
+    this.historyWarned = false;
+  }
+
+  private switchConversation(id: string, ctx: ExtensionContext, note: string): void {
+    this.closeStore();
+    storeConversation(process.cwd(), id);
+    const live = this.state.tag !== "off";
+    if (live) this.commit(handleCommand(this.state, { tag: "stop" }), ctx);
+    ctx.ui.notify(live ? `${note} Voice stopped — type /voice to begin it.` : note, "info");
+  }
+
+  private resumeConversation(selector: string | null, ctx: ExtensionContext): void {
+    const listed = listConversations(10);
+    if (selector == null) {
+      if (listed.length === 0) {
+        ctx.ui.notify("No earlier voice conversations yet. /voice new starts a fresh one.", "info");
+        return;
+      }
+      const lines = listed.map((item, index) =>
+        `${index + 1}. ${item.first || "(no user turns)"} — ${item.turns} turns, ${item.last ? localWhen(item.last) : "unknown time"}`);
+      ctx.ui.notify(`Past voice conversations (Pi session unchanged):\n${lines.join("\n")}\nType /voice resume <number> to go back to one.`, "info");
+      return;
+    }
+    const resolved = resolveConversation(selector, listed.map((item) => item.id));
+    if ("error" in resolved) {
+      ctx.ui.notify(resolved.error, "warning");
+      return;
+    }
+    this.switchConversation(resolved.id, ctx, "Voice conversation switched.");
   }
 }
 

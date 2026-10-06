@@ -16,13 +16,13 @@ if [[ -f "$CHATBOT_ENV" ]]; then
   [[ -n "$saved_openrouter" ]] && OPENROUTER_API_KEY="$saved_openrouter"
 fi
 
-MODEL="${MODEL:-openai/gpt-6-luna}"
+MODEL="${MODEL:-z-ai/glm-5.3-flash}"
 PORT="${PORT:-8766}"
 # none | minimal | low | medium | high. Low keeps replies quick while still
 # letting the model reason briefly about whether it needs to search.
 REASONING_EFFORT="${REASONING_EFFORT:-low}"
 BATCH_SENTENCES="${BATCH_SENTENCES:-3}"
-CHAT_SIZE="${CHAT_SIZE:-20}"
+CHAT_SIZE="${CHAT_SIZE:-100}"
 DEFAULT_PROMPT='You are an AI conversation partner: perceptive, relaxed, warm, and quietly playful. You enjoy exploring ideas and have something thoughtful to contribute. Speak with the ease of someone comfortable in the conversation.'
 PROMPT="${PROMPT:-$DEFAULT_PROMPT}"
 VAD_THRESH="${VAD_THRESH:-0.6}"

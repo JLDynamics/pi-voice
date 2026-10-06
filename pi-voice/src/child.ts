@@ -38,8 +38,13 @@ export function stderrLogPath(pid: ChildPid): string {
   return join(process.env.TMPDIR || tmpdir(), `pi-voice.${pid}.stderr.log`);
 }
 
-export function headlessChildEnv(base: NodeJS.ProcessEnv = process.env, history: VoiceHistoryTurn[] = []): NodeJS.ProcessEnv {
-  return { ...base, VOICE_THINKER: "luna", VOICE_HISTORY: JSON.stringify(history) };
+export function headlessChildEnv(base: NodeJS.ProcessEnv = process.env, history: VoiceHistoryTurn[] = [], historyDbPath?: string): NodeJS.ProcessEnv {
+  const env = { ...base, VOICE_THINKER: "luna", VOICE_HISTORY: JSON.stringify(history) };
+  // Voice.app has no HistoryArchive yet, so nothing reads this today; it names
+  // the cabinet for the Swift recall_history port to pick up.
+  delete env.VOICE_HISTORY_DB;
+  if (historyDbPath) env.VOICE_HISTORY_DB = historyDbPath;
+  return env;
 }
 
 export type VoiceHistoryTurn = { role: "user" | "assistant"; text: string };

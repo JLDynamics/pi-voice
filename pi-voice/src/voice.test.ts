@@ -446,7 +446,8 @@ describe("work", () => {
       { tag: "work", id: asWork("news-1"), brief: asUser("Find AI news") },
       world(),
     );
-    assert.deepEqual(tags(next.effects).slice(0, 2), ["upsertFace", "sendWork"]);
+    assert.deepEqual(tags(next.effects).slice(0, 2), ["upsertFace", "recordTurn"]);
+    assert.ok(tags(next.effects).includes("sendWork"));
     if (next.state.tag !== "on") throw new Error("expected on");
     assert.equal(next.state.heardPending, null);
     const spoken = step(next.state, { tag: "spoken", text: "Pi is searching" }, world());
@@ -539,7 +540,7 @@ describe("spoken", () => {
     const final = step(second.state, { tag: "spoken", text: "Hello there" }, world());
     if (final.state.tag !== "on") throw new Error("expected on");
     assert.equal(final.state.streamingSpoken, "");
-    assert.deepEqual(tags(final.effects), ["upsertFace", "paint"]);
+    assert.deepEqual(tags(final.effects), ["upsertFace", "paint", "recordTurn"]);
   });
   it("keeps the spoken fragment when the user interrupts and rejects the late final", () => {
     const started = step(on(), { tag: "spokenDelta", text: "I found three", itemId: "reply-1" }, world());
@@ -554,7 +555,7 @@ describe("spoken", () => {
     const next = step(on(), { tag: "spoken", text: "Hey. What's up?" }, world());
     if (next.state.tag !== "on") throw new Error("expected on");
     assert.equal(next.state.lastSpoken, "Hey. What's up?");
-    assert.deepEqual(tags(next.effects), ["upsertFace", "paint"]);
+    assert.deepEqual(tags(next.effects), ["upsertFace", "paint", "recordTurn"]);
     const face = next.effects.find((effect) => effect.tag === "upsertFace");
     assert.equal(face && face.tag === "upsertFace" ? face.kind : undefined, "spoken");
     assert.ok(!tags(next.effects).includes("speak"));
@@ -645,6 +646,9 @@ describe("agentSettled", () => {
       "Tesla is around $420.\n---\nA 679-character dump.",
     );
     assert.equal(post && post.tag === "postResult" ? post.id : undefined, "w1");
+    const recorded = next.effects.find((effect) => effect.tag === "recordTurn");
+    assert.equal(recorded && recorded.tag === "recordTurn" ? recorded.turnKind : undefined, "work");
+    assert.match(recorded && recorded.tag === "recordTurn" ? recorded.turn.text : "", /^\[Earlier, Pi finished/);
   });
 
   it("settling with no answer reports failed, never postResult", () => {
@@ -681,7 +685,7 @@ describe("composerInput", () => {
     if (next.state.tag !== "on") throw new Error("expected on");
     assert.equal(next.state.job.tag, "running");
     assert.equal(next.state.lastHeard, "OrcaRouter Ternary Bonsai");
-    assert.deepEqual(tags(next.effects), ["interruptSpeech", "injectUser", "upsertFace", "paint"]);
+    assert.deepEqual(tags(next.effects), ["interruptSpeech", "injectUser", "upsertFace", "recordTurn", "paint"]);
     const inject = next.effects.find((effect) => effect.tag === "injectUser");
     assert.equal(inject && inject.tag === "injectUser" ? inject.text : undefined, "OrcaRouter Ternary Bonsai");
     const face = next.effects.find((effect) => effect.tag === "upsertFace");
@@ -953,6 +957,21 @@ describe("job identity", () => {
     const next = step(on({ job: runningJob(brief, { bound: true }) }), { tag: "agentSettled" }, world({ branch }));
     assert.equal(next.effects.find((e) => e.tag === "postResult")?.tag, "postResult");
     assert.equal(next.effects.find((e) => e.tag === "postResult" && e.speak === "new answer")?.tag, "postResult");
+  });
+
+  it("hands over the superseded answer instead of dropping it silently", () => {
+    const branch = [
+      message("u1", "user", jobPrompt(asWork("w1"), asUser("check"))),
+      message("a1", "assistant", "old answer"),
+      message("u2", "user", jobPrompt(asWork("w2"), asUser("newer"))),
+    ];
+    const next = step(on({ job: runningJob("check", { bound: true }) }), { tag: "agentSettled" }, world({ branch }));
+    const post = next.effects.find((e) => e.tag === "postResult");
+    assert.equal(post && post.tag === "postResult" ? post.speak : undefined, "old answer");
+    const update = next.effects.find((e) => e.tag === "sendJobUpdate");
+    assert.equal(update?.tag === "sendJobUpdate" ? update.status : undefined, "superseded");
+    const recorded = next.effects.find((e) => e.tag === "recordTurn");
+    assert.equal(recorded && recorded.tag === "recordTurn" ? recorded.turnKind : undefined, "work");
   });
 
   it("does not take an answer from a later unrelated turn", () => {

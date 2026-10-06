@@ -16,7 +16,7 @@ def test_current_defaults_are_mac_voice_profile():
     assert args.stt_backend.name == "native-stt"
     assert args.llm_backend.name == "responses-api"
     assert args.tts_backend.name == "siri"
-    assert args.llm_backend.config["model_name"] == "openai/gpt-6-luna"
+    assert args.llm_backend.config["model_name"] == "z-ai/glm-5.3-flash"
     assert args.tts_backend.config["voice"] == "en-US-F"
 
 

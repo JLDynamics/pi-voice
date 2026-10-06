@@ -6,7 +6,7 @@ from chatbot.arguments_classes.language_model_base_arguments import LanguageMode
 @dataclass
 class ResponsesApiLanguageModelHandlerArguments(LanguageModelBaseArguments):
     model_name: str = field(
-        default="openai/gpt-6-luna",
+        default="z-ai/glm-5.3-flash",
         metadata={"help": "OpenRouter Responses API model name."},
     )
     responses_api_stream: bool = field(
