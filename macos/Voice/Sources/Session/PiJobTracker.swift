@@ -106,12 +106,13 @@ struct PiJobTracker {
             return
         }
         let storedBrief = brief ?? jobs[id]?.brief ?? ""
-        if var job = jobs[id] {
+        if var job = jobs[id], !isTerminal(job.state) {
             job.state = .done
             job.updatedAt = now
             jobs[id] = job
             lastTerminal = job
         }
+        results.removeAll { $0.id == id }
         results.append(StoredResult(
             id: id,
             brief: storedBrief,

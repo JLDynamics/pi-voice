@@ -40,9 +40,8 @@ final class LocalServiceStarter {
         case ready
         /// Current code, still loading.
         case starting
-        /// Answering, but not something this app can use: code on disk has
-        /// changed since it started, it belongs to another checkout, or it
-        /// predates the health contract.
+        /// Not current. The launcher decides whether replacement is safe;
+        /// this probe is readiness-only, never proof of ownership.
         case stale
         /// Nothing answered.
         case unreachable
@@ -115,7 +114,7 @@ final class LocalServiceStarter {
             pending.forEach { $0.resume() }
         }
         if state == .stale {
-            // The launcher replaces stale services it finds, but a launcher
+            // The launcher replaces verified same-checkout stale listeners, but a launcher
             // of ours would otherwise keep supervising the ones it replaces.
             await stopOwnLauncher()
         }

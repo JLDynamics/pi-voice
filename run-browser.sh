@@ -43,8 +43,7 @@ ports=("$PORT")
 # --reuse-running keeps a service only while it runs this checkout's current
 # code. Each service reports the fingerprint of the sources it loaded and
 # whether disk has since changed; anything older than that contract, from
-# another checkout, or unable to answer is stopped and started again here.
-# Processes that are not Chatbot services are never touched.
+# this checkout may be replaced. Unverified or foreign listeners are refused.
 HERE_PHYSICAL="$(pwd -P)"
 PYTHON=""
 if [[ -x .venv/bin/python3 ]]; then
@@ -144,12 +143,13 @@ stop_targets=""
 for i in ${held_ports[@]+"${!held_ports[@]}"}; do
   case "${held_states[$i]}" in
     current) ;;
-    other)
-      echo "Warning: port ${held_ports[$i]} is held by pid ${held_pids[$i]}, which is not a Chatbot service; leaving it alone." >&2
-      ;;
-    *)
+    stale)
       echo "The service on port ${held_ports[$i]} (pid ${held_pids[$i]}) is ${held_states[$i]}; restarting it from $HERE."
       stop_targets="$stop_targets ${held_targets[$i]} "
+      ;;
+    *)
+      echo "Error: port ${held_ports[$i]} is ${held_states[$i]}; ownership is not verified. Leaving pid ${held_pids[$i]} alone." >&2
+      exit 1
       ;;
   esac
 done

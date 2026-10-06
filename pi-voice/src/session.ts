@@ -29,6 +29,7 @@ export function boundHistory(history: VoiceHistoryTurn[]): VoiceHistoryTurn[] {
     size -= Buffer.byteLength(JSON.stringify(turns[drop]), "utf8") + 1;
     drop++;
   }
+  while (drop < turns.length && turns[drop].role === "assistant") drop++;
   return turns.slice(drop);
 }
 

@@ -473,6 +473,12 @@ struct RuntimeTests {
         assert(restartedBackend.historyMessages.map(\.text) == [
             "We discussed AI news.", "Yes, we discussed AI news."
         ], "a new Voice process must replay Pi's saved turns")
+        let manyBackend = MockVoiceBackend()
+        let many = SessionController(backend: manyBackend)
+        let turns = (0..<80).map { (role: $0 % 2 == 0 ? "user" : "assistant", text: "turn \($0)") }
+        many.seedHistory(turns)
+        await many.begin()
+        assert(manyBackend.historyMessages.map(\.text) == turns.map(\.text), "Swift preserves upstream replay selection")
     }
 
     @MainActor
@@ -530,6 +536,9 @@ struct RuntimeTests {
         let latest = tracker.statusPayload(now: t0.addingTimeInterval(87))
         assert(((latest["last"] as? [String: Any])?["id"] as? String) == "w2c")
         assert(((latest["last"] as? [String: Any])?["outcome"] as? String) == "failed")
+        tracker.finish(id: "w2c", text: "Partial findings", now: t0.addingTimeInterval(88))
+        assert(tracker.jobs["w2c"]?.state == .failed, "Caching partial findings preserves terminal outcome")
+        assert((tracker.resultsPayload(id: "w2c", cursor: 0, limit: 100)["text"] as? String) == "Partial findings")
 
         // Paged re-reads, defaulting to latest.
         let long = String(repeating: "word ", count: 2500) + "end."

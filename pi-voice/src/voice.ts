@@ -8,22 +8,12 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import type { AutocompleteItem, Component } from "@earendil-works/pi-tui";
 import { clearOwnedLease, liveForeignOwner, reapOrphans, VoiceChild, type VoiceHistoryTurn } from "./child.ts";
-import { bindJob, jobIdFromText, jobPrompt, lastUserJobId, openJob, settleJob } from "./work.ts";
+import { bindJob, jobIdFromText, jobPrompt, lastUserJobId, openJob, settleJob, terminalJob } from "./work.ts";
 import {
-  historyDbFile,
-  listConversations,
   localWhen,
-  resolveConversation,
-  workHistoryTurn,
-  HistoryStore,
   type TurnKind,
 } from "./history.ts";
-import {
-  boundHistory,
-  loadConversation,
-  newConversationId,
-  storeConversation,
-} from "./session.ts";
+import { Conversation } from "./conversation.ts";
 
 export type ChildPid = number & { readonly brand: "ChildPid" };
 export type WorkId = string & { readonly brand: "WorkId" };
@@ -300,6 +290,9 @@ export function parseSlash(args: string): VoiceCommand | { tag: "unknown"; raw: 
 }
 
 export function handleCommand(state: VoiceState, command: VoiceCommand): Step {
+  // Conversation switching is owned by Voice.slash, which never reaches the
+  // reducer; this keeps the reducer total over the widened command type.
+  if (command.tag === "newConversation" || command.tag === "resumeConversation") return keep(state);
   if (command.tag === "stop") {
     if (state.tag === "off") return keep(state);
     return stopLive(state);
@@ -494,7 +487,7 @@ export function step(state: VoiceState, event: VoiceEvent, world: StepWorld): St
       !world.idle && state.job.bound && lastUserJobId(world.branch) === state.job.id;
     const next: VoiceState = { ...state, job: { tag: "abandoned", id: state.job.id } };
     const effects: Effect[] = [
-      { tag: "sendJobUpdate", id: state.job.id, status: "stopped" },
+      ...terminalJob(state.job, world, "stopped"),
       { tag: "upsertFace", id: `work:${state.job.id}`, kind: "work", text: `stopped: ${state.job.brief}`, final: true },
       { tag: "paint", strip: strip(next, world.now) },
     ];
@@ -572,9 +565,7 @@ export class Voice {
   private pendingMute: boolean | undefined;
   private reapJob: Promise<string | undefined> | undefined;
   private thinkingRestore: string | undefined;
-  private store: HistoryStore | null = null;
-  private conversationId: string | null = null;
-  private historyWarned = false;
+  private conversation: Conversation | null = null;
   private readonly finalFaceIds = new Set<string>();
   private readonly startedSpokenIds = new Set<string>();
   private readonly spokenTexts = new Map<string, string>();
@@ -594,11 +585,21 @@ export class Voice {
       return;
     }
     if (parsed.tag === "newConversation") {
-      this.switchConversation(newConversationId(), ctx, "New voice conversation started.");
+      try {
+        this.history().fresh();
+      } catch (error) {
+        ctx.ui.notify(`Voice history unavailable, keeping current conversation: ${String(error)}`, "warning");
+        return;
+      }
+      this.switchConversation(ctx, "New voice conversation started.");
       return;
     }
     if (parsed.tag === "resumeConversation") {
-      this.resumeConversation(parsed.selector, ctx);
+      try {
+        this.resumeConversation(parsed.selector, ctx);
+      } catch (error) {
+        ctx.ui.notify(`Voice history unavailable: ${String(error)}`, "warning");
+      }
       return;
     }
     if (parsed.tag === "toggle" && this.state.tag === "off") {
@@ -659,6 +660,7 @@ export class Voice {
       }),
       ctx ?? this.lastCtx,
     );
+    if (event.tag === "shutdown") this.conversation?.close();
   }
 
   private capJobThinking(): void {
@@ -730,17 +732,7 @@ export class Voice {
         ctx?.abort();
         return;
       case "recordTurn":
-        try {
-          this.store?.append(effect.turn, effect.turnKind);
-        } catch (error) {
-          // A write failure must not interrupt the call, but the user should
-          // know this call is not being saved.
-          if (!this.historyWarned) {
-            this.historyWarned = true;
-            const detail = error instanceof Error ? error.message : String(error);
-            ctx?.ui.notify(`Voice history is not being saved: ${detail}`, "warning");
-          }
-        }
+        this.conversation?.record(effect.turn, effect.turnKind);
         return;
       case "paint":
         if (effect.strip) {
@@ -807,11 +799,11 @@ export class Voice {
     }
     try {
       const branch = (ctx ?? this.lastCtx)?.sessionManager?.getBranch?.() ?? [];
-      const history = this.ensureStore(branch, ctx);
+      const history = this.history().replay(voiceHistory(branch));
       this.child = VoiceChild.spawn((event) => {
         if (this.epoch !== epoch) return;
         this.feed(event, this.lastCtx ?? ctx);
-      }, history, this.conversationId ? historyDbFile(this.conversationId) : undefined);
+      }, history);
       if (this.pendingMute != null) this.child.setMuted(this.pendingMute);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -820,68 +812,25 @@ export class Voice {
   }
 
   /**
-   * Open this folder's conversation cabinet (creating it on first use) and
-   * return what Luna starts the call with: the cabinet replay, or Pi's own
-   * session branch while the cabinet is still empty. A fresh cabinet is
-   * seeded from the branch once, so upgrading keeps what Pi already saved.
+   * The conversation cabinet for this folder, opened on first use. History
+   * policy (selection, migration, replay, fallback) lives in Conversation;
+   * this only owns the instance and surfaces its warnings once each.
    */
-  private ensureStore(branch: SessionEntry[], ctx?: ExtensionContext): VoiceHistoryTurn[] {
-    const cwd = process.cwd();
-    if (!this.store || !this.conversationId) {
-      const resumed = loadConversation(cwd);
-      const id = resumed ?? newConversationId();
-      if (!resumed) storeConversation(cwd, id);
-      this.conversationId = id;
-      try {
-        this.store = HistoryStore.open(historyDbFile(id));
-        this.store.setMetaOnce("cwd", cwd);
-      } catch (error) {
-        // A damaged or locked cabinet must never brick /voice: fall back to
-        // Pi's session branch for this call and try the cabinet again next time.
-        this.store = null;
-        this.conversationId = null;
-        const detail = error instanceof Error ? error.message : String(error);
-        (ctx ?? this.lastCtx)?.ui.notify(`Voice history unavailable, using session only: ${detail}`, "warning");
-        return boundHistory(voiceHistory(branch));
-      }
-    }
-    const store = this.store;
-    if (store.count() === 0) {
-      for (const turn of voiceHistory(branch)) {
-        try {
-          store.append(turn, "voice");
-        } catch {
-          break; // seeding is best-effort; the call still works
-        }
-      }
-    }
-    const replay = store.loadReplay();
-    if (replay.length > 0) return boundHistory(replay);
-    return boundHistory(voiceHistory(branch));
+  private history(): Conversation {
+    return this.conversation ??= new Conversation(process.cwd(), message => {
+      this.lastCtx?.ui.notify(message, "warning");
+    });
   }
 
-  private closeStore(): void {
-    try {
-      this.store?.close();
-    } catch {
-      // best-effort; a new store opens over it
-    }
-    this.store = null;
-    this.conversationId = null;
-    this.historyWarned = false;
-  }
-
-  private switchConversation(id: string, ctx: ExtensionContext, note: string): void {
-    this.closeStore();
-    storeConversation(process.cwd(), id);
+  private switchConversation(ctx: ExtensionContext, note: string): void {
     const live = this.state.tag !== "off";
     if (live) this.commit(handleCommand(this.state, { tag: "stop" }), ctx);
     ctx.ui.notify(live ? `${note} Voice stopped — type /voice to begin it.` : note, "info");
   }
 
   private resumeConversation(selector: string | null, ctx: ExtensionContext): void {
-    const listed = listConversations(10);
     if (selector == null) {
+      const listed = this.history().list();
       if (listed.length === 0) {
         ctx.ui.notify("No earlier voice conversations yet. /voice new starts a fresh one.", "info");
         return;
@@ -891,12 +840,12 @@ export class Voice {
       ctx.ui.notify(`Past voice conversations (Pi session unchanged):\n${lines.join("\n")}\nType /voice resume <number> to go back to one.`, "info");
       return;
     }
-    const resolved = resolveConversation(selector, listed.map((item) => item.id));
-    if ("error" in resolved) {
-      ctx.ui.notify(resolved.error, "warning");
+    const error = this.history().resume(selector);
+    if (error) {
+      ctx.ui.notify(error, "warning");
       return;
     }
-    this.switchConversation(resolved.id, ctx, "Voice conversation switched.");
+    this.switchConversation(ctx, "Voice conversation switched.");
   }
 }
 

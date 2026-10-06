@@ -286,6 +286,13 @@ it("places the user's live transcript before Luna and updates it in place", () =
 });
 
 describe("handleCommand", () => {
+  it("conversation commands are owned by slash, never the reducer", () => {
+    for (const command of [{ tag: "newConversation" }, { tag: "resumeConversation", selector: null }] as const) {
+      const next = handleCommand(on(), command);
+      assert.equal(next.state.tag, "on");
+      assert.deepEqual(next.effects, []);
+    }
+  });
   it("off + toggle → connecting + reap + spawn", () => {
     const next = handleCommand(off(), { tag: "toggle" });
     assert.equal(next.state.tag, "connecting");

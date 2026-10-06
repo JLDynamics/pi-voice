@@ -19,6 +19,19 @@ function paint(state: VoiceState, now: number): Effect {
   return { tag: "paint", strip: strip(state, now) };
 }
 
+/** Terminal outcome is sent before findings; caching cannot imply completion. */
+export function terminalJob(job: Extract<Job, { tag: "running" }>, world: StepWorld,
+  status: "stopped" | "superseded", note?: string): Effect[] {
+  const effects: Effect[] = [{ tag: "sendJobUpdate", id: job.id, status, note }];
+  const full = (answerForJob(world.branch, job.id) ?? "").trim();
+  const speak = fullResult(full);
+  if (speak) effects.push(
+    { tag: "postResult", id: job.id, speak, full },
+    { tag: "recordTurn", turn: { role: "assistant", text: `[Partial Pi findings; task ${status}] ${full}` }, turnKind: "work" },
+  );
+  return effects;
+}
+
 export function openJob(state: VoiceState, id: WorkId, brief: UserText, world: StepWorld): Step {
   if (state.tag !== "on" || state.mic.tag !== "open") return keep(state);
   const effects: Effect[] = [];
@@ -26,7 +39,7 @@ export function openJob(state: VoiceState, id: WorkId, brief: UserText, world: S
   if (state.job.tag === "running") {
     const ownsTurn = !world.idle && state.job.bound && lastUserJobId(world.branch) === state.job.id;
     if (ownsTurn) effects.push({ tag: "abortWork" });
-    effects.push({ tag: "sendJobUpdate", id: state.job.id, status: "stopped" });
+    effects.push(...terminalJob(state.job, world, "stopped"));
     effects.push({ tag: "upsertFace", id: `work:${state.job.id}`, kind: "work", text: `stopped: ${state.job.brief}`, final: true });
   }
   const deliver = state.job.tag === "running" || !world.idle ? "steer" : "plain";
@@ -58,22 +71,8 @@ export function settleJob(state: VoiceState, world: StepWorld): Step {
   if (lastUserJobId(world.branch) !== state.job.id) {
     if (!hasJobMessage(world.branch, state.job.id)) return keep(state);
     const next: VoiceState = { ...state, job: { tag: "none" } };
-    const update: Effect = {
-      tag: "sendJobUpdate",
-      id: state.job.id,
-      status: "superseded",
-      note: "Another Pi request took over",
-    };
-    // Pi answered before the newer request took over: hand over what it found
-    // instead of dropping it silently. The superseded update itself stays
-    // silent; the result speaks and caches for pi_results like any answer.
-    const full = (answerForJob(world.branch, state.job.id) ?? "").trim();
-    const speak = fullResult(full);
-    if (!speak) return { state: next, effects: [update, paint(next, world.now)] };
     return { state: next, effects: [
-      { tag: "postResult", id: state.job.id, speak, full },
-      update,
-      { tag: "recordTurn", turn: workHistoryTurn(state.job.brief, full), turnKind: "work" },
+      ...terminalJob(state.job, world, "superseded", "Another Pi request took over"),
       paint(next, world.now),
     ] };
   }

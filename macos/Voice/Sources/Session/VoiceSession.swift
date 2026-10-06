@@ -135,7 +135,7 @@ final class SessionController {
 
     func seedHistory(_ turns: [(role: String, text: String)]) {
         guard !isLive else { return }
-        messages = turns.suffix(20).compactMap { turn in
+        messages = turns.compactMap { turn in
             guard (turn.role == "user" || turn.role == "assistant"),
                   !turn.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
             return ChatMessage(role: turn.role, text: turn.text)

@@ -235,7 +235,10 @@ final class LiveVoiceBackend: VoiceBackend, HeadlessBackend {
             extra: ["chars": complete.count]
         ))
         let more = complete.count > trimmed.count ? "\n[More detail is available with pi_results id \(id).]" : ""
-        sendUserText("[PI] " + trimmed + more)
+        let outcome = piJobs.jobs[id]?.state
+        let partial = outcome == .stopped || outcome == .superseded || outcome == .failed
+        let label = partial ? "[PI] Partial findings from an incomplete task (\(outcome!.rawValue)). Say what was found and what remains unresolved: " : "[PI] "
+        sendUserText(label + trimmed + more)
         requestFollowUpIfIdle()
     }
 
@@ -872,7 +875,7 @@ final class LiveVoiceBackend: VoiceBackend, HeadlessBackend {
                 replayable.append(("assistant", "[Earlier I used \(name.isEmpty ? "tool" : name)] \(shown)"))
             }
         }
-        for m in replayable.suffix(20) {
+        for m in replayable {
             let type = m.role == "assistant" ? "output_text" : "input_text"
             send([
                 "type": "conversation.item.create",
@@ -884,7 +887,7 @@ final class LiveVoiceBackend: VoiceBackend, HeadlessBackend {
             ])
         }
         if !replayable.isEmpty {
-            NSLog("[LiveVoice] replayed %d saved message(s)", min(replayable.count, 20))
+            NSLog("[LiveVoice] replayed %d saved message(s)", replayable.count)
         }
     }
 

@@ -115,7 +115,7 @@ def test_reuse_preserves_an_external_service_and_exits(launcher):
     directory, start, _ = launcher
     (directory / VOICE_PORT).write_text("external-service")
     process = start("--reuse-running")
-    assert process.wait(timeout=5) == 0
+    assert process.wait(timeout=5) == 1
     assert (directory / VOICE_PORT).read_text() == "external-service"
 
 
@@ -146,7 +146,7 @@ def test_reuse_keeps_a_current_service(launcher):
     assert pid_in(directory / VOICE_PORT) == voice.pid
 
 
-@pytest.mark.parametrize("verdict", ["stale", "unknown", "foreign", None])
+@pytest.mark.parametrize("verdict", ["stale"])
 def test_reuse_replaces_a_service_that_is_not_running_this_checkouts_code(launcher, verdict):
     """stale = disk changed under it; unknown = predates fingerprints; foreign =
     another checkout; None = listening but never answers (hung)."""
@@ -160,6 +160,17 @@ def test_reuse_replaces_a_service_that_is_not_running_this_checkouts_code(launch
     process.terminate()
     assert process.wait(timeout=5) == 143
     wait_for(lambda: not (directory / VOICE_PORT).exists())
+
+
+@pytest.mark.parametrize("verdict", ["unknown", "foreign", None])
+def test_reuse_refuses_unverified_ownership(launcher, verdict):
+    directory, start, start_service = launcher
+    old = start_service(VOICE_PORT)
+    if verdict is not None:
+        (directory / f"state-{VOICE_PORT}").write_text(f"{verdict}\n")
+    assert start("--reuse-running").wait(timeout=5) == 1
+    assert old.poll() is None
+    assert pid_in(directory / VOICE_PORT) == old.pid
 
 
 def test_reuse_stops_the_launcher_owning_a_stale_service(launcher):
