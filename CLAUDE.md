@@ -39,7 +39,7 @@ uv run python scripts/verify-voice.py              # live text turn over the rea
 uv run python scripts/verify-voice.py --research   # live bash/curl research / stray-Han TTS
 ```
 
-CI (`macos-14`): runs only Python checks on Python 3.11, installed with `uv sync --frozen --no-default-groups --group dev` (ruff check, ruff format --check, mypy, pytest, `uv build`, `twine check --strict`, and install smoke test `tests/install_smoke.py` plus `pip check`). Swift (`test.sh`) and pi-voice (`node --test`) tests are local only. Pushing a `v*` tag publishes the `chatbot` package to public PyPI (`publish.yml`).
+CI (`macos-14`): runs Python checks installed with `uv sync --frozen --no-default-groups --group dev` (ruff check, ruff format --check, mypy, pytest, `uv build`, `twine check --strict`, and install smoke test `tests/install_smoke.py` plus `pip check`), Pi extension tests on Node 24, and Swift runtime tests. Pushing a `v*` tag publishes the `chatbot` package to public PyPI (`publish.yml`).
 
 ## Architecture
 
@@ -107,6 +107,8 @@ In interactive mode, `/voice` stays in Pi's ordinary terminal transcript. Luna's
 Architecture & purity: `step()` / `handleCommand()` in `voice.ts` and `work.ts` are pure reducers returning `{state, effects}`; the `Voice` class applies effects to the Pi API; `child.ts` owns the child process and the lease file (`$TMPDIR/pi-voice.lease.json` or `tmpdir()`), which blocks a second Pi window from running voice concurrently and reaps orphaned `--headless` Voice processes. Keep new logic in the reducer so it stays testable.
 
 ## Working in this checkout
+
+- **Verification or review:** read `scripts/AGENT-VERIFICATION.md` for boundary-specific completion criteria, safe service ownership, and pending integration gaps from the session retrospective.
 
 - **`AGENTS.md` is a short pointer to this file** for other coding agents. Keep facts here, not there.
 - **Tests:** Python tests are flat `tests/test_*.py` plus `tests/openai_realtime/` (own `conftest.py`); Swift tests are one file, `macos/Voice/Tests/RuntimeTests.swift`; pi-voice tests are `voice.test.ts` and `work.test.ts`.

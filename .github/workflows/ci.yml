@@ -6,6 +6,19 @@ on:
   pull_request:
 
 jobs:
+  voice-clients:
+    runs-on: macos-14
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+      - name: Pi extension tests
+        run: node --test 'pi-voice/src/*.test.ts'
+      - name: Swift runtime tests
+        run: bash macos/Voice/scripts/test.sh
+
   quality:
     runs-on: macos-14
     timeout-minutes: 45

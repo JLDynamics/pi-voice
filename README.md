@@ -97,7 +97,7 @@ bash macos/Voice/scripts/test.sh
 uv run python scripts/verify-voice.py --research   # live bash/curl research, services must be up
 ```
 
-CI runs on macOS (lint, format, types, tests), builds the Python package, and performs an installation smoke test. Swift and pi-voice tests are local only. Publishing is handled by `.github/workflows/publish.yml` for `v*` tags.
+CI runs on macOS (Python lint, format, types, tests; Swift runtime tests; Pi extension tests), builds the Python package, and performs an installation smoke test. Publishing is handled by `.github/workflows/publish.yml` for `v*` tags.
 
 ### Contributing via pull requests
 
