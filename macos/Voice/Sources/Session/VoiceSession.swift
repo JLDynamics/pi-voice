@@ -50,6 +50,7 @@ protocol VoiceBackend: AnyObject {
     var onUserSpeechStarted: (() -> Void)? { get set }
     /// The server finalized a turn but will not answer it (turn_ignored).
     var onTurnDropped: (() -> Void)? { get set }
+    var onRequestError: ((String) -> Void)? { get set }
     var onUserFinal: ((String, String?) -> Void)? { get set } // final transcript + server item id (stable across pause-merged segments)
     var onAgentDelta: ((String) -> Void)? { get set }       // streamed reply text
     var onAgentDone: (() -> Void)? { get set }
@@ -92,6 +93,7 @@ final class SessionController {
 
     // Direct event callbacks for HeadlessBridge or other session observers
     var onStateChanged: ((SessionState) -> Void)?
+    var onRequestError: ((String) -> Void)?
     var onSpeechStarted: (() -> Void)?
     var onHeard: ((String, String?) -> Void)?
     var onSpokenDelta: ((String) -> Void)?
@@ -143,6 +145,7 @@ final class SessionController {
     }
 
     private func wire() {
+        backend.onRequestError = { [weak self] message in self?.onRequestError?(message) }
         backend.onState = { [weak self] state in
             guard let self else { return }
             self.state = state

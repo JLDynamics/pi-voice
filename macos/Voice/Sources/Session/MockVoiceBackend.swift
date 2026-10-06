@@ -7,6 +7,7 @@ final class MockVoiceBackend: VoiceBackend, HeadlessBackend {
     var onState: ((SessionState) -> Void)?
     var onUserSpeechStarted: (() -> Void)?
     var onTurnDropped: (() -> Void)?
+    var onRequestError: ((String) -> Void)?
     var onUserFinal: ((String, String?) -> Void)?
     var onAgentDelta: ((String) -> Void)?
     var onAgentDone: (() -> Void)?

@@ -119,6 +119,12 @@ def test_research_section_follows_the_published_tools():
     assert "curl" not in via_pi
     assert "Let me have Pi check that" in via_pi
     assert "## Speaking for Pi" in via_pi
+    assert "creates PDF/Markdown files" in via_pi
+    assert "Pi owns permissions/approvals" in via_pi
+    assert "including outside paths" in via_pi
+    assert "missing save destination" in via_pi
+    assert "not a new research question" in via_pi
+    assert "Steer corrections with ask_pi" in via_pi
 
     none = build_voice_system_prompt("P", now=FIXED_NOW, tool_names=[])
     assert "curl" not in none

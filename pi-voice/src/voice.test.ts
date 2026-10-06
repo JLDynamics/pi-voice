@@ -497,7 +497,7 @@ describe("work", () => {
     assert.equal(update && update.tag === "sendJobUpdate" ? update.status : undefined, "dropped");
   });
 
-  it("second work stops the first job and steers the replacement", () => {
+  it("second work steers Pi without aborting the live operation", () => {
     const next = openJob(
       on({ job: runningJob("first") }),
       asWork("w2"),
@@ -510,17 +510,17 @@ describe("work", () => {
     const send = next.effects.find((effect) => effect.tag === "sendWork");
     assert.equal(send && send.tag === "sendWork" ? send.deliver : undefined, "steer");
     const superseded = next.effects.find((effect) => effect.tag === "sendJobUpdate");
-    assert.equal(superseded && superseded.tag === "sendJobUpdate" ? superseded.status : undefined, "stopped");
+    assert.equal(superseded && superseded.tag === "sendJobUpdate" ? superseded.status : undefined, "superseded");
     assert.equal(superseded && superseded.tag === "sendJobUpdate" ? superseded.id : undefined, "w1");
     assert.ok(!tags(next.effects).includes("speak"));
   });
-  it("cancels the active Pi turn before starting a different voice task", () => {
+  it("a correction preserves the active Pi turn and steers the new routing id", () => {
     const previous = on({ job: runningJob("old search", { bound: true }) });
     const branch = [message("old", "user", jobPrompt(asWork("w1"), asUser("old search")))];
     const next = step(previous, { tag: "work", id: asWork("w2"), brief: asUser("new task") },
       world({ idle: false, branch }));
-    assert.ok(tags(next.effects).indexOf("abortWork") < tags(next.effects).indexOf("sendWork"));
-    assert.ok(tags(next.effects).includes("abortWork"));
+    assert.ok(!tags(next.effects).includes("abortWork"));
+    assert.ok(tags(next.effects).includes("sendWork"));
   });
 });
 
@@ -692,7 +692,7 @@ describe("composerInput", () => {
     if (next.state.tag !== "on") throw new Error("expected on");
     assert.equal(next.state.job.tag, "running");
     assert.equal(next.state.lastHeard, "OrcaRouter Ternary Bonsai");
-    assert.deepEqual(tags(next.effects), ["interruptSpeech", "injectUser", "upsertFace", "recordTurn", "paint"]);
+    assert.deepEqual(tags(next.effects), ["injectUser", "upsertFace", "recordTurn", "paint"]);
     const inject = next.effects.find((effect) => effect.tag === "injectUser");
     assert.equal(inject && inject.tag === "injectUser" ? inject.text : undefined, "OrcaRouter Ternary Bonsai");
     const face = next.effects.find((effect) => effect.tag === "upsertFace");

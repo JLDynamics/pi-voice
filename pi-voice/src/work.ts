@@ -35,12 +35,10 @@ export function terminalJob(job: Extract<Job, { tag: "running" }>, world: StepWo
 export function openJob(state: VoiceState, id: WorkId, brief: UserText, world: StepWorld): Step {
   if (state.tag !== "on" || state.mic.tag !== "open") return keep(state);
   const effects: Effect[] = [];
-  // A new task stops the previous voice job before steering Pi to the new one.
+  // New routing id, same live Pi operation: steer without aborting its context.
+  // Explicit stop_pi still owns cancellation.
   if (state.job.tag === "running") {
-    const ownsTurn = !world.idle && state.job.bound && lastUserJobId(world.branch) === state.job.id;
-    if (ownsTurn) effects.push({ tag: "abortWork" });
-    effects.push(...terminalJob(state.job, world, "stopped"));
-    effects.push({ tag: "upsertFace", id: `work:${state.job.id}`, kind: "work", text: `stopped: ${state.job.brief}`, final: true });
+    effects.push({ tag: "sendJobUpdate", id: state.job.id, status: "superseded", note: "Task updated; Pi continues" });
   }
   const deliver = state.job.tag === "running" || !world.idle ? "steer" : "plain";
   const job: Job = {

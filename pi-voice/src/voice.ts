@@ -75,6 +75,7 @@ export type VoiceCommand =
 export type VoiceEvent =
   | { tag: "ready" }
   | { tag: "error"; message: string }
+  | { tag: "requestError"; message: string }
   | { tag: "childExit"; code: number | null }
   | { tag: "heard"; text: UserText; itemId?: string }
   | { tag: "spoken"; text: string; itemId?: string }
@@ -326,6 +327,8 @@ export function handleCommand(state: VoiceState, command: VoiceCommand): Step {
 }
 
 export function step(state: VoiceState, event: VoiceEvent, world: StepWorld): Step {
+  if (event.tag === "requestError") return keep(state, [{ tag: "notify", kind: "error",
+    message: `${event.message} Your message is saved. You can ask Luna to retry.` }]);
   if (event.tag === "shutdown") return handleCommand(state, { tag: "stop" });
   if (event.tag === "speechStarted") {
     if (state.tag !== "on" || !state.streamingSpoken || !state.spokenItemId) return keep(state);
@@ -393,7 +396,6 @@ export function step(state: VoiceState, event: VoiceEvent, world: StepWorld): St
     return {
       state: next,
       effects: [
-        { tag: "interruptSpeech" },
         { tag: "injectUser", text },
         { tag: "upsertFace", id: `typed:${world.now}`, kind: "heard", text, final: true },
         { tag: "recordTurn", turn: { role: "user", text }, turnKind: "voice" },

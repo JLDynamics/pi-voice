@@ -10,6 +10,7 @@ final class LiveVoiceBackend: VoiceBackend, HeadlessBackend {
     var onState: ((SessionState) -> Void)?
     var onUserSpeechStarted: (() -> Void)?
     var onTurnDropped: (() -> Void)?
+    var onRequestError: ((String) -> Void)?
     var onUserFinal: ((String, String?) -> Void)?
     var onAgentDelta: ((String) -> Void)?
     var onAgentDone: (() -> Void)?
@@ -653,6 +654,12 @@ final class LiveVoiceBackend: VoiceBackend, HeadlessBackend {
                 if !closed, !audio.isPlaying, activeResponseId.isEmpty {
                     onState?(.listening)
                 }
+            } else if let error = json["error"] as? [String: Any] {
+                let code = error["code"] as? String ?? ""
+                if code == "response_cancel_not_active" { break }
+                onRequestError?(error["message"] as? String ?? "The reply failed. Please retry.")
+                responseCreateRequested = false
+                responseRequestPending = false
             }
 
         default:
@@ -764,7 +771,7 @@ final class LiveVoiceBackend: VoiceBackend, HeadlessBackend {
     private static let askPiTool: [String: Any] = [
         "type": "function",
         "name": "ask_pi",
-        "description": "Queue work to Pi in the already-open TUI. Returns immediately with an id. Use pi_status to check progress and pi_results to re-read finished work. Keep talking. Do not wait. Pi's result arrives later as a conversation item.",
+        "description": "Delegate local file reading (including PDFs), resume editing, PDF/Markdown creation, terminal commands, and research to Pi in the already-open TUI. Include user-supplied paths, even outside the current folder. Pi manages permissions and approvals. Ask for a save destination if missing. A call while Pi works steers the task; corrections need no stop_pi. Returns immediately with an id; Pi's result arrives later. Use pi_status/pi_results for progress/detail.",
         "parameters": [
             "type": "object",
             "properties": [

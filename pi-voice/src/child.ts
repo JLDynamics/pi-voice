@@ -150,6 +150,8 @@ export function parseLine(raw: string): VoiceEvent | undefined {
   if (parsed == null || typeof parsed !== "object" || Array.isArray(parsed)) return;
   const object = parsed as { type?: unknown; message?: unknown; text?: unknown; id?: unknown; brief?: unknown; item_id?: unknown };
   if (object.type === "ready") return { tag: "ready" };
+  if (object.type === "request_error") return { tag: "requestError", message:
+    typeof object.message === "string" && object.message ? object.message : "Reply failed" };
   if (object.type === "error") {
     return {
       tag: "error",

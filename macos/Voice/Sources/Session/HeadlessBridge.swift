@@ -42,6 +42,9 @@ final class HeadlessBridge {
         session.onAgentDone = { [weak self] in
             self?.spokenItemId = nil
         }
+        session.onRequestError = { [weak self] message in
+            self?.emit(["type": "request_error", "message": message])
+        }
         session.onSpeechStarted = { [weak self] in
             self?.emit(["type": "speech_started"])
         }
