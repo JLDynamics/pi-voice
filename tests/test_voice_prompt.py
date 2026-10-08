@@ -102,6 +102,17 @@ def test_voice_prompt_explains_how_to_speak_for_pi():
     assert "[FINAL]" not in bash
 
 
+def test_voice_prompt_hands_screen_and_computer_use_to_pi():
+    """Screen questions and UI control go through the handoff. Voice cannot see or click."""
+    prompt = build_voice_system_prompt(PERSONA, now=NOW, tool_names=["spawn_thinking", "stop_thinking"])
+    assert "refer to the screen" in prompt
+    assert "you must call it too" in prompt
+    assert "you cannot see or click" in prompt
+    assert "screenshot" not in prompt
+    bash = build_voice_system_prompt(PERSONA, now=NOW)
+    assert "you cannot see or click" not in bash
+
+
 def test_voice_prompt_says_pi_can_be_stopped():
     """Agent refused to stop Pi because nothing told it that it could."""
     prompt = build_voice_system_prompt(PERSONA, now=NOW, tool_names=["spawn_thinking", "stop_thinking"])

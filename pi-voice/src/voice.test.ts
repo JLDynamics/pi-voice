@@ -924,6 +924,18 @@ describe("onBeforeAgentStart", () => {
     assert.equal(event.systemPromptOptions.sections.voice, WORK_SECTION);
     assert.equal(levels.at(-1), "off");
   });
+
+  it("tells Pi to capture the front window and drive the computer itself", () => {
+    assert.match(WORK_SECTION, /screencapture -x -l <id>/);
+    assert.match(WORK_SECTION, /kCGWindowNumber/);
+    assert.match(WORK_SECTION, /use your read tool on that png/);
+    assert.match(WORK_SECTION, /then delete the file/);
+    assert.match(WORK_SECTION, /Screen Recording permission/);
+    assert.match(WORK_SECTION, /computer-use and browser tools/);
+    assert.match(WORK_SECTION, /Accessibility permission/);
+    assert.match(WORK_SECTION, /Voice cannot click/);
+    assert.doesNotMatch(WORK_SECTION, /screenshot/);
+  });
 });
 
 describe("lastAssistantText", () => {

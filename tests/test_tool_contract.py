@@ -70,6 +70,12 @@ def test_headless_voice_publishes_only_the_handoff():
     for retired in ("ask_pi", "stop_pi", "pi_status", "pi_results"):
         assert f'"name": "{retired}"' not in source
     assert '"name": "bash"' not in tools
+    assert '"name": "screenshot"' not in source
+    description = source.split('"name": "spawn_thinking"', 1)[1].split('"name": "stop_thinking"', 1)[0]
+    assert "what is on screen" in description
+    assert "click, type, fill forms, navigate" in description
+    assert "You cannot see the screen or click yourself" in description
+    assert "screenshot" not in description
 
 
 def test_every_tool_has_a_progress_label():

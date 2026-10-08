@@ -766,7 +766,7 @@ final class LiveVoiceBackend: VoiceBackend, HeadlessBackend {
     private static let spawnThinkingTool: [String: Any] = [
         "type": "function",
         "name": "spawn_thinking",
-        "description": "Hand real work to the open Pi session: files, PDFs, resumes, the shell, web research, code changes, or anything you are not sure about. Answer casual chat yourself when you already have the context; do not call this for that. A call while Pi is working redirects the current task; the latest brief wins, so a correction does not need stop_thinking. Include paths the user gave. Ask for a missing save destination. Returns immediately. Say one short acknowledgement in this same turn, then wait. Progress arrives as [STATUS] and the answer as [FINAL]. Do not claim you already did the work.",
+        "description": "Hand real work to the open Pi session: files, PDFs, resumes, the shell, web research, code changes, what is on screen, controlling the computer (click, type, fill forms, navigate), or anything you are not sure about. You cannot see the screen or click yourself. Answer casual chat yourself when you already have the context; do not call this for that. A call while Pi is working redirects the current task; the latest brief wins, so a correction does not need stop_thinking. Include paths the user gave. Ask for a missing save destination. Returns immediately. Say one short acknowledgement in this same turn, then wait. Progress arrives as [STATUS] and the answer as [FINAL]. Do not claim you already did the work.",
         "parameters": [
             "type": "object",
             "properties": [

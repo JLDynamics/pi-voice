@@ -145,6 +145,12 @@ export const WORK_SECTION = [
   "The user's messages reach you as speech transcripts: they may be unpunctuated or misrecognised.",
   "The Pi voice job id at the end of a delegated request is only for routing; do not mention it in your answer.",
   "Keep it concise and action-oriented.",
+  "If the brief is about the screen, this window, or a visible app, capture the frontmost window yourself.",
+  "Take the first on-screen layer-0 kCGWindowNumber (the CGWindowID, not a System Events window id), run `screencapture -x -l <id>` to a temp png, use your read tool on that png, answer from the image, then delete the file.",
+  "The voice line never receives the image, so describe what you saw in text.",
+  "If capture fails, say the terminal that launched Pi needs Screen Recording permission. Do not guess the screen.",
+  "If the brief asks to click, type, fill a form, or navigate a UI or browser, do it with the computer-use and browser tools already installed in this session.",
+  "If that control fails, say the same terminal needs Accessibility permission. Voice cannot click.",
 ].join(" ");
 
 const WIDGET_KEY = "pi-voice";
