@@ -1,5 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { Voice, detectMuteChord } from "./voice.ts";
+import { AGENT_LABEL, Voice, detectMuteChord } from "./voice.ts";
 import { jobIdFromText, toolProgress } from "./work.ts";
 
 export default function (pi: ExtensionAPI): void {
@@ -8,7 +8,7 @@ export default function (pi: ExtensionAPI): void {
   const partialTools = new Set<string>();
 
   pi.registerCommand("voice", {
-    description: "Talk in this session. Luna hears and speaks. Second /voice stops.",
+    description: `Talk in this session. ${AGENT_LABEL} hears and speaks. Second /voice stops.`,
     getArgumentCompletions: (prefix) => {
       const items = voice.completions(prefix);
       return items.length > 0 ? items : null;
@@ -22,7 +22,7 @@ export default function (pi: ExtensionAPI): void {
   // Never ctrl+m (ASCII 13 / Enter). ctrl+shift+m only if Kitty or
   // modifyOtherKeys is already active. Else alt+m (legacy ESC m).
   pi.registerShortcut(detectMuteChord(), {
-    description: "Mute or unmute Luna's mic",
+    description: `Mute or unmute ${AGENT_LABEL}'s mic`,
     handler: (ctx) => voice.slash("mute", ctx),
   });
 

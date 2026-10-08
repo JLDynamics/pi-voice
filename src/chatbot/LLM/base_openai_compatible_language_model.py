@@ -150,7 +150,7 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
 
     def setup(
         self,
-        model_name: str = "z-ai/glm-5.3-flash",
+        model_name: str = "anthropic/claude-haiku-5.5",
         device: str = "cuda",
         gen_kwargs: dict[str, Any] = {},
         base_url: str = "https://openrouter.ai/api/v1",

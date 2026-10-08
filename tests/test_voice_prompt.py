@@ -136,3 +136,11 @@ def test_unknown_tools_default_to_bash_guidance():
     assert build_voice_system_prompt("P", now=FIXED_NOW) == build_voice_system_prompt(
         "P", now=FIXED_NOW, tool_names=["bash"]
     )
+
+
+def test_assistant_is_named_agent_and_knows_its_old_name() -> None:
+    """The persona is Agent. Saved history can still call it Luna, so the prompt says that was its old name."""
+    for names in (None, [], ["ask_pi", "stop_pi"], ["ask_claude", "stop_claude"]):
+        prompt = build_voice_system_prompt("P", tool_names=names)
+        assert prompt.startswith("You are Agent, an AI conversation partner"), names
+        assert "You are Agent (earlier turns may say Luna, your old name; do not use it)." in prompt, names

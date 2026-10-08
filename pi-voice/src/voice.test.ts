@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 import {
+  AGENT_LABEL,
   asUser,
   asWork,
   detectMuteChord,
@@ -130,6 +131,17 @@ describe("completions", () => {
       ["mute"],
     );
   });
+
+  it("calls the assistant Agent in the menu, not the Luna persona name", () => {
+    const described = voice.completions("mu").concat(voice.completions("un")).map((item) => item.description);
+    assert.deepEqual(described, ["Mute Agent's mic", "Unmute Agent's mic"]);
+  });
+});
+
+it("a failed request tells the user to ask Agent to retry", () => {
+  const next = step(on(), { tag: "requestError", message: "Pi could not start." }, world());
+  const notify = next.effects.find((effect) => effect.tag === "notify");
+  assert.ok(notify && notify.tag === "notify" && notify.message.endsWith("You can ask Agent to retry."));
 });
 
 describe("detectMuteChord", () => {
@@ -188,14 +200,14 @@ function restoreEnv(name: string, value: string | undefined): void {
 
 describe("faceLines", () => {
   it("shows saved voice entries in the normal terminal during a call", () => {
-    assert.deepEqual(sessionFaceLines("luna", "Hello there", 40, true), ["luna  Hello there"]);
-    assert.deepEqual(sessionFaceLines("luna", "Hello there", 40, false), ["luna  Hello there"]);
+    assert.deepEqual(sessionFaceLines(AGENT_LABEL, "Hello there", 40, true), ["Agent  Hello there"]);
+    assert.deepEqual(sessionFaceLines(AGENT_LABEL, "Hello there", 40, false), ["Agent  Hello there"]);
   });
   it("wraps the crash-log Luna reply so no line exceeds the terminal", () => {
     const spoken =
       "Ha, fair enough — consider this an open audition. No pressure on my end. So where do you want to start? I can hold up my end on most things: ideas, trivia, arguments you want to test out, or just whatever's rattling around in your head on a Sunday. Or if you want to stress-test me, throw something tricky at me and see what happens.";
-    assert.equal(`luna  ${spoken}`.length, 339);
-    const lines = faceLines("luna", spoken, 183);
+    assert.equal(`Agent  ${spoken}`.length, 340);
+    const lines = faceLines(AGENT_LABEL, spoken, 183);
     assert.ok(lines.length >= 2);
     for (const line of lines) assert.ok(line.length <= 183, line);
     assert.ok(lines.join(" ").includes("open audition"));
@@ -242,7 +254,7 @@ it("streams Luna into one normal transcript entry and restores its final text", 
   assert.equal(entries.length, 1);
   assert.equal(entries[0]?.kind, "spoken-live");
   const component = renderEntry?.({ data: entries[0]! });
-  assert.match(component?.render(40).join(" ") ?? "", /luna  First/);
+  assert.match(component?.render(40).join(" ") ?? "", /Agent  First/);
   voice.feed({ tag: "spokenDelta", text: " sentence", itemId: "reply-1" }, ctx);
   assert.equal(entries.length, 1);
   assert.match(component?.render(40).join(" ") ?? "", /First sentence/);
@@ -257,7 +269,7 @@ it("streams Luna into one normal transcript entry and restores its final text", 
   const replay = replayRenderer?.({ data: entries[0]! });
   replayRenderer?.({ data: entries[1]! });
   assert.match(replay?.render(40).join(" ") ?? "", /First sentence\./);
-  assert.deepEqual(spokenFaceLines("First line\nSecond line", 40), ["luna  First line", "      Second line"]);
+  assert.deepEqual(spokenFaceLines("First line\nSecond line", 40), ["Agent  First line", "       Second line"]);
 });
 
 it("places the user's live transcript before Luna and updates it in place", () => {
@@ -277,12 +289,12 @@ it("places the user's live transcript before Luna and updates it in place", () =
   voice.feed({ tag: "heard", text: asUser("Hello, how are you?"), itemId: "turn-1" }, ctx);
   voice.feed({ tag: "spokenDelta", text: "I'm well", itemId: "reply-1" }, ctx);
   assert.deepEqual(entries.map((entry) => entry.kind), ["heard-live", "spoken-live"]);
-  assert.match(userLine?.render(80).join(" ") ?? "", /you  Hello, how are you\?/);
+  assert.match(userLine?.render(80).join(" ") ?? "", /You  Hello, how are you\?/);
   voice.feed({ tag: "spoken", text: "I'm well.", itemId: "reply-1" }, ctx);
   assert.deepEqual(entries.map((entry) => entry.kind), ["heard-live", "spoken-live", "heard-final", "spoken-final"]);
   assert.equal(renderEntry?.({ data: entries[2]! }), undefined);
   assert.equal(renderEntry?.({ data: entries[3]! }), undefined);
-  assert.match(userLine?.render(80).join(" ") ?? "", /you  Hello, how are you\?/);
+  assert.match(userLine?.render(80).join(" ") ?? "", /You  Hello, how are you\?/);
 });
 
 describe("handleCommand", () => {

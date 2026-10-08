@@ -16,7 +16,7 @@ if [[ -f "$CHATBOT_ENV" ]]; then
   [[ -n "$saved_openrouter" ]] && OPENROUTER_API_KEY="$saved_openrouter"
 fi
 
-MODEL="${MODEL:-z-ai/glm-5.3-flash}"
+MODEL="${MODEL:-anthropic/claude-haiku-5.5}"
 PORT="${PORT:-8766}"
 # none | minimal | low | medium | high. Low keeps replies quick while still
 # letting the model reason briefly about whether it needs to search.

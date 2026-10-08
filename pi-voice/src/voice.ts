@@ -138,10 +138,10 @@ export const RESULT_MAX = 1500;
  * reads the whole thing and speaks about it in her own words.
  */
 export const WORK_SECTION = [
-  "Luna is on the voice line in this same session.",
-  "She reads your full answer and tells the user what matters, in her own words, out loud.",
-  "So write for the terminal as usual — do not write for speech, and do not split your answer for her.",
-  "Lead with the outcome in a sentence or two, then the detail; that is what she relays first.",
+  "Agent, the voice assistant, is on the voice line in this same session.",
+  "It reads your full answer and tells the user what matters, in its own words, out loud.",
+  "So write for the terminal as usual — do not write for speech, and do not split your answer for it.",
+  "Lead with the outcome in a sentence or two, then the detail; that is what it relays first.",
   "The user's messages reach you as speech transcripts: they may be unpunctuated or misrecognised.",
   "The Pi voice job id at the end of a delegated request is only for routing; do not mention it in your answer.",
   "Keep it concise and action-oriented.",
@@ -175,6 +175,11 @@ export function muteHint(): string {
   return `/voice mute   ${detectMuteChord()}   /voice stop`;
 }
 
+/** Name shown next to the voice assistant's lines in the transcript (the voice persona's name too). */
+export const AGENT_LABEL = "Agent";
+/** Name shown next to the user's spoken lines in the transcript. */
+export const USER_LABEL = "You";
+
 /** Pi crashes if any custom render line is wider than the terminal. */
 export function faceLines(who: string, text: string, width: number): string[] {
   const w = Math.max(1, Math.floor(width));
@@ -192,7 +197,7 @@ export function sessionFaceLines(who: string, text: string, width: number, voice
 /** Keep the live reply in the transcript, with paragraphs and a stable label. */
 export function spokenFaceLines(text: string, width: number): string[] {
   return text.split(/\r?\n/).flatMap((paragraph, index) =>
-    wrapToWidth(`${index === 0 ? "luna  " : "      "}${paragraph}`, Math.max(1, Math.floor(width))));
+    wrapToWidth(`${index === 0 ? `${AGENT_LABEL}  ` : " ".repeat(AGENT_LABEL.length + 2)}${paragraph}`, Math.max(1, Math.floor(width))));
 }
 
 function wrapToWidth(text: string, width: number): string[] {
@@ -328,7 +333,7 @@ export function handleCommand(state: VoiceState, command: VoiceCommand): Step {
 
 export function step(state: VoiceState, event: VoiceEvent, world: StepWorld): Step {
   if (event.tag === "requestError") return keep(state, [{ tag: "notify", kind: "error",
-    message: `${event.message} Your message is saved. You can ask Luna to retry.` }]);
+    message: `${event.message} Your message is saved. You can ask ${AGENT_LABEL} to retry.` }]);
   if (event.tag === "shutdown") return handleCommand(state, { tag: "stop" });
   if (event.tag === "speechStarted") {
     if (state.tag !== "on" || !state.streamingSpoken || !state.spokenItemId) return keep(state);
@@ -539,7 +544,7 @@ export class Voice {
         if (data?.kind === "heard-live" && data.id) {
           if (!voice.heardTexts.has(data.id)) voice.heardTexts.set(data.id, data.text ?? "");
           const id = data.id;
-          return { render: (width: number) => faceLines("you", voice.heardTexts.get(id) ?? "", width), invalidate() {} };
+          return { render: (width: number) => faceLines(USER_LABEL, voice.heardTexts.get(id) ?? "", width), invalidate() {} };
         }
         if (data?.kind === "spoken-live" && data.id) {
           if (!voice.spokenTexts.has(data.id)) voice.spokenTexts.set(data.id, data.text ?? "");
@@ -547,7 +552,7 @@ export class Voice {
           return { render: (width: number) => spokenFaceLines(voice.spokenTexts.get(id) ?? "", width), invalidate() {} };
         }
         if (!data?.text) return;
-        const who = data.kind === "heard" ? "you" : data.kind === "spoken" ? "luna" : "pi";
+        const who = data.kind === "heard" ? USER_LABEL : data.kind === "spoken" ? AGENT_LABEL : "pi";
         const text = data.text;
         const face: Component = {
           render: (width: number) => sessionFaceLines(who, text, width, voice.state.tag !== "off"),
@@ -622,8 +627,8 @@ export class Voice {
     const p = prefix.trim().toLowerCase();
     if (!p) return [];
     return [
-      { value: "mute", label: "mute", description: "Mute Luna's mic" },
-      { value: "unmute", label: "unmute", description: "Unmute Luna's mic" },
+      { value: "mute", label: "mute", description: `Mute ${AGENT_LABEL}'s mic` },
+      { value: "unmute", label: "unmute", description: `Unmute ${AGENT_LABEL}'s mic` },
       { value: "stop", label: "stop", description: "Stop voice in this session" },
       { value: "new", label: "new", description: "Start a fresh voice conversation" },
       { value: "resume", label: "resume", description: "List or resume a past voice conversation" },

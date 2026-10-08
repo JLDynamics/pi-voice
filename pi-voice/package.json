@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Talk in this Pi session. Luna hears and speaks.",
+  "description": "Talk in this Pi session. Agent hears and speaks.",
   "keywords": ["pi-package"],
   "pi": {
     "extensions": ["./src/index.ts"]
