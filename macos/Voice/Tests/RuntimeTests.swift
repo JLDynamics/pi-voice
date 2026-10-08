@@ -61,6 +61,16 @@ struct RuntimeTests {
         assert(!VoiceToolFollowUp.shouldAcknowledgeHandoff(handoffCalled: false, spokenText: "", cancelled: false))
         assert(!VoiceToolFollowUp.shouldAcknowledgeHandoff(handoffCalled: true, spokenText: "", cancelled: false, muted: true),
                "a muted handoff is dropped by the extension; do not promise it")
+        // Pi's [FINAL] waits while the server answers a transcribed turn it has
+        // not announced yet, but never forever.
+        // turn_ignored arrives as error.type with a null code; it is not a failure.
+        assert(VoiceServerError.kind(["type": "turn_ignored", "code": NSNull(), "message": "Turn ignored (no_text)"]) == "turn_ignored")
+        assert(VoiceServerError.kind(["type": "invalid_request_error", "code": "response_cancel_not_active"]) == "response_cancel_not_active")
+        assert(VoiceServerError.kind(["message": "x"]) == "")
+        let heldAt = Date()
+        assert(!VoiceContextHold.shouldHold(implicitTurnSince: nil, now: heldAt))
+        assert(VoiceContextHold.shouldHold(implicitTurnSince: heldAt, now: heldAt.addingTimeInterval(3)))
+        assert(!VoiceContextHold.shouldHold(implicitTurnSince: heldAt, now: heldAt.addingTimeInterval(VoiceContextHold.maxHold)))
 
         let scope = VoiceWorkScope()
         let oldGeneration = scope.generation

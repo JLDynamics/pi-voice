@@ -23,6 +23,37 @@ enum VoiceToolFollowUp {
     }
 }
 
+/// When Pi's `[FINAL]` / failure context must wait instead of going out now.
+///
+/// After a spoken turn is transcribed, the server answers it implicitly, but
+/// announces `response.created` only with the first output, seconds later.
+/// An item sent in that window lands in the chat *before* the reply the
+/// server is already generating, and a `response.create` sent with it runs
+/// after that reply, so the conversation ends on an assistant message. Claude
+/// rejects that ("does not support assistant message prefill"), and the Pi
+/// result was never spoken (seen live: a result landed while the user talked).
+/// Hold it until the turn's `response.done`, with a cap so a turn the server
+/// drops silently cannot strand it.
+enum VoiceContextHold {
+    static let maxHold: TimeInterval = 15
+
+    static func shouldHold(implicitTurnSince: Date?, now: Date = Date()) -> Bool {
+        guard let since = implicitTurnSince else { return false }
+        return now.timeIntervalSince(since) < maxHold
+    }
+}
+
+/// The server's `error` events name their kind in `error.type`
+/// (`build_error_event`) and leave `code` null. Matching only `code` turned
+/// every `turn_ignored` (an empty transcript) into a request failure that Pi
+/// showed as "Error: Turn ignored (no_text) Your message is saved".
+enum VoiceServerError {
+    static func kind(_ error: [String: Any]) -> String {
+        if let code = error["code"] as? String, !code.isEmpty { return code }
+        return error["type"] as? String ?? ""
+    }
+}
+
 /// When `speech_started` may steal the panel.
 ///
 /// Gaps between TTS chunks look like "not playing". An active response

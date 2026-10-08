@@ -58,6 +58,13 @@ final class LiveVoiceBackend: VoiceBackend, HeadlessBackend {
     /// call_id of a spawn_thinking/stop_thinking in the response now streaming,
     /// so `response.done` can ask for an acknowledgement if it spoke nothing.
     private var handoffAckCallId: String?
+    /// Set when a spoken turn is transcribed (the server is about to answer it
+    /// without a `response.created` yet); cleared when that response starts or
+    /// ends. See ``VoiceContextHold``.
+    private var implicitTurnSince: Date?
+    /// Pi context (`[FINAL]`, failure) held during that window, in order.
+    private var heldContext: [String] = []
+    private var heldNeedsFollowUp = false
 
     private var agentText = ""
     private var activeResponseId = ""
@@ -209,6 +216,40 @@ final class LiveVoiceBackend: VoiceBackend, HeadlessBackend {
         audio.clearPlayback()
         finishAgentTurn()
         if !closed { onState?(.listening) }
+        // response.cancel also drops a pending implicit turn on the server.
+        releaseHeldContext()
+    }
+
+    /// Send Pi context now, or hold it while the server is answering a spoken
+    /// turn it has not announced yet (``VoiceContextHold``).
+    private func deliverContext(_ text: String, followUp: Bool) {
+        if VoiceContextHold.shouldHold(implicitTurnSince: implicitTurnSince) {
+            heldContext.append(text)
+            if followUp { heldNeedsFollowUp = true }
+            let since = implicitTurnSince
+            let generation = connectionGeneration
+            DispatchQueue.main.asyncAfter(deadline: .now() + VoiceContextHold.maxHold) { [weak self] in
+                guard let self, self.connectionGeneration == generation,
+                      self.implicitTurnSince == since, !self.heldContext.isEmpty else { return }
+                NSLog("[LiveVoice] implicit turn never reported; releasing held context")
+                self.releaseHeldContext()
+            }
+            return
+        }
+        sendUserText(text)
+        if followUp { requestFollowUpIfIdle() }
+    }
+
+    private func releaseHeldContext() {
+        implicitTurnSince = nil
+        guard !heldContext.isEmpty else { return }
+        let items = heldContext
+        let followUp = heldNeedsFollowUp
+        heldContext = []
+        heldNeedsFollowUp = false
+        guard !closed else { return }
+        items.forEach { sendUserText($0) }
+        if followUp { requestFollowUpIfIdle() }
     }
 
     func speak(_ text: String) {
@@ -238,8 +279,7 @@ final class LiveVoiceBackend: VoiceBackend, HeadlessBackend {
             extra: ["chars": complete.count]
         ))
         let outcome = piJobs.jobs[id]?.state
-        sendUserText(PiJobTracker.finalChannel(excerpt: trimmed, outcome: outcome))
-        requestFollowUpIfIdle()
+        deliverContext(PiJobTracker.finalChannel(excerpt: trimmed, outcome: outcome), followUp: true)
     }
 
     /// Extension-pushed job phase (`job_update` over stdio). Feeds the local
@@ -265,8 +305,7 @@ final class LiveVoiceBackend: VoiceBackend, HeadlessBackend {
             if !piJobs.hasActive { piProgressTask?.cancel(); piProgressTask = nil }
         }
         if state == .failed {
-            sendUserText(PiJobTracker.failureChannel(reason: note ?? ""))
-            requestFollowUpIfIdle()
+            deliverContext(PiJobTracker.failureChannel(reason: note ?? ""), followUp: true)
         }
         if state == .done || state == .stopped || state == .failed {
             appendPiJournal(PiJobTracker.journalLine(
@@ -293,7 +332,8 @@ final class LiveVoiceBackend: VoiceBackend, HeadlessBackend {
                 let changed = note != nil && note != self.lastPiProgressNote
                 guard PiJobTracker.shouldSpeakProgress(elapsed: elapsed, changed: changed) else { continue }
                 guard self.activeResponseId.isEmpty, !self.responseCreateRequested,
-                      !self.audio.isPlaying, !self.userSpeechActive else { continue }
+                      !self.audio.isPlaying, !self.userSpeechActive,
+                      self.implicitTurnSince == nil else { continue }
                 self.lastPiProgressAt = now
                 self.lastPiProgressNote = note
                 self.sendUserText(PiJobTracker.statusChannel(note: note ?? ""))
@@ -358,6 +398,9 @@ final class LiveVoiceBackend: VoiceBackend, HeadlessBackend {
         responseRequestPending = false
         cancelledIds.removeAll()
         muted = false
+        implicitTurnSince = nil
+        heldContext = []
+        heldNeedsFollowUp = false
         if emitIdle { onState?(.idle) }
     }
 
@@ -522,6 +565,7 @@ final class LiveVoiceBackend: VoiceBackend, HeadlessBackend {
 
         case "response.created":
             responseCreateRequested = false
+            implicitTurnSince = nil
             lastResponseCreatedAt = Date()
             if let response = json["response"] as? [String: Any],
                let id = response["id"] as? String {
@@ -574,6 +618,8 @@ final class LiveVoiceBackend: VoiceBackend, HeadlessBackend {
                 break
             }
             lastInputItemId = itemId
+            // The server now answers this turn on its own; see VoiceContextHold.
+            implicitTurnSince = Date()
             onUserFinal?(transcript, itemId)
 
         case "response.audio_transcript.delta", "response.output_audio_transcript.delta":
@@ -604,6 +650,8 @@ final class LiveVoiceBackend: VoiceBackend, HeadlessBackend {
                     audio.clearPlayback()
                 }
             }
+            // The reply is written back; held Pi context now follows it.
+            releaseHeldContext()
             let ackCallId = handoffAckCallId
             handoffAckCallId = nil
             let acknowledge = VoiceToolFollowUp.shouldAcknowledgeHandoff(
@@ -656,14 +704,14 @@ final class LiveVoiceBackend: VoiceBackend, HeadlessBackend {
 
         case "error":
             // Transport close is fatal; server events like turn_ignored are not.
-            if let error = json["error"] as? [String: Any], error["code"] as? String == "turn_ignored" {
+            if let error = json["error"] as? [String: Any], VoiceServerError.kind(error) == "turn_ignored" {
+                releaseHeldContext()
                 onTurnDropped?()
                 if !closed, !audio.isPlaying, activeResponseId.isEmpty {
                     onState?(.listening)
                 }
             } else if let error = json["error"] as? [String: Any] {
-                let code = error["code"] as? String ?? ""
-                if code == "response_cancel_not_active" { break }
+                if VoiceServerError.kind(error) == "response_cancel_not_active" { break }
                 onRequestError?(error["message"] as? String ?? "The reply failed. Please retry.")
                 responseCreateRequested = false
                 responseRequestPending = false
