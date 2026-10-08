@@ -138,10 +138,10 @@ export const RESULT_MAX = 1500;
  * reads the whole thing and speaks about it in her own words.
  */
 export const WORK_SECTION = [
-  "Luna is on the voice line in this same session.",
-  "She reads your full answer and tells the user what matters, in her own words, out loud.",
-  "So write for the terminal as usual — do not write for speech, and do not split your answer for her.",
-  "Lead with the outcome in a sentence or two, then the detail; that is what she relays first.",
+  "Agent, the voice assistant, is on the voice line in this same session.",
+  "It reads your full answer and tells the user what matters, in its own words, out loud.",
+  "So write for the terminal as usual — do not write for speech, and do not split your answer for it.",
+  "Lead with the outcome in a sentence or two, then the detail; that is what it relays first.",
   "The user's messages reach you as speech transcripts: they may be unpunctuated or misrecognised.",
   "The Pi voice job id at the end of a delegated request is only for routing; do not mention it in your answer.",
   "Keep it concise and action-oriented.",
@@ -175,7 +175,7 @@ export function muteHint(): string {
   return `/voice mute   ${detectMuteChord()}   /voice stop`;
 }
 
-/** Name shown next to the voice assistant's lines in the transcript (the persona is still Luna). */
+/** Name shown next to the voice assistant's lines in the transcript (the voice persona's name too). */
 export const AGENT_LABEL = "Agent";
 /** Name shown next to the user's spoken lines in the transcript. */
 export const USER_LABEL = "You";
