@@ -175,6 +175,9 @@ export function muteHint(): string {
   return `/voice mute   ${detectMuteChord()}   /voice stop`;
 }
 
+/** Name shown next to the voice assistant's lines in the transcript (the persona is still Luna). */
+export const AGENT_LABEL = "agent";
+
 /** Pi crashes if any custom render line is wider than the terminal. */
 export function faceLines(who: string, text: string, width: number): string[] {
   const w = Math.max(1, Math.floor(width));
@@ -192,7 +195,7 @@ export function sessionFaceLines(who: string, text: string, width: number, voice
 /** Keep the live reply in the transcript, with paragraphs and a stable label. */
 export function spokenFaceLines(text: string, width: number): string[] {
   return text.split(/\r?\n/).flatMap((paragraph, index) =>
-    wrapToWidth(`${index === 0 ? "luna  " : "      "}${paragraph}`, Math.max(1, Math.floor(width))));
+    wrapToWidth(`${index === 0 ? `${AGENT_LABEL}  ` : " ".repeat(AGENT_LABEL.length + 2)}${paragraph}`, Math.max(1, Math.floor(width))));
 }
 
 function wrapToWidth(text: string, width: number): string[] {
@@ -547,7 +550,7 @@ export class Voice {
           return { render: (width: number) => spokenFaceLines(voice.spokenTexts.get(id) ?? "", width), invalidate() {} };
         }
         if (!data?.text) return;
-        const who = data.kind === "heard" ? "you" : data.kind === "spoken" ? "luna" : "pi";
+        const who = data.kind === "heard" ? "you" : data.kind === "spoken" ? AGENT_LABEL : "pi";
         const text = data.text;
         const face: Component = {
           render: (width: number) => sessionFaceLines(who, text, width, voice.state.tag !== "off"),

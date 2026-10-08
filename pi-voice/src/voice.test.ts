@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 import {
+  AGENT_LABEL,
   asUser,
   asWork,
   detectMuteChord,
@@ -188,14 +189,14 @@ function restoreEnv(name: string, value: string | undefined): void {
 
 describe("faceLines", () => {
   it("shows saved voice entries in the normal terminal during a call", () => {
-    assert.deepEqual(sessionFaceLines("luna", "Hello there", 40, true), ["luna  Hello there"]);
-    assert.deepEqual(sessionFaceLines("luna", "Hello there", 40, false), ["luna  Hello there"]);
+    assert.deepEqual(sessionFaceLines(AGENT_LABEL, "Hello there", 40, true), ["agent  Hello there"]);
+    assert.deepEqual(sessionFaceLines(AGENT_LABEL, "Hello there", 40, false), ["agent  Hello there"]);
   });
   it("wraps the crash-log Luna reply so no line exceeds the terminal", () => {
     const spoken =
       "Ha, fair enough — consider this an open audition. No pressure on my end. So where do you want to start? I can hold up my end on most things: ideas, trivia, arguments you want to test out, or just whatever's rattling around in your head on a Sunday. Or if you want to stress-test me, throw something tricky at me and see what happens.";
-    assert.equal(`luna  ${spoken}`.length, 339);
-    const lines = faceLines("luna", spoken, 183);
+    assert.equal(`agent  ${spoken}`.length, 340);
+    const lines = faceLines(AGENT_LABEL, spoken, 183);
     assert.ok(lines.length >= 2);
     for (const line of lines) assert.ok(line.length <= 183, line);
     assert.ok(lines.join(" ").includes("open audition"));
@@ -242,7 +243,7 @@ it("streams Luna into one normal transcript entry and restores its final text", 
   assert.equal(entries.length, 1);
   assert.equal(entries[0]?.kind, "spoken-live");
   const component = renderEntry?.({ data: entries[0]! });
-  assert.match(component?.render(40).join(" ") ?? "", /luna  First/);
+  assert.match(component?.render(40).join(" ") ?? "", /agent  First/);
   voice.feed({ tag: "spokenDelta", text: " sentence", itemId: "reply-1" }, ctx);
   assert.equal(entries.length, 1);
   assert.match(component?.render(40).join(" ") ?? "", /First sentence/);
@@ -257,7 +258,7 @@ it("streams Luna into one normal transcript entry and restores its final text", 
   const replay = replayRenderer?.({ data: entries[0]! });
   replayRenderer?.({ data: entries[1]! });
   assert.match(replay?.render(40).join(" ") ?? "", /First sentence\./);
-  assert.deepEqual(spokenFaceLines("First line\nSecond line", 40), ["luna  First line", "      Second line"]);
+  assert.deepEqual(spokenFaceLines("First line\nSecond line", 40), ["agent  First line", "       Second line"]);
 });
 
 it("places the user's live transcript before Luna and updates it in place", () => {
