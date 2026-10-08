@@ -22,7 +22,7 @@ fi
 
 PORT="${PORT:-8766}"
 SERVER_LOG="${SERVER_LOG:-/tmp/chatbot-server.log}"
-MODEL="${MODEL:-z-ai/glm-5.3-flash}"
+MODEL="${MODEL:-anthropic/claude-haiku-5.5}"
 export MODEL
 
 listener() { lsof -ti "TCP:$1" -sTCP:LISTEN 2>/dev/null | head -1 || true; }

@@ -35,7 +35,7 @@ uv sync
 
 That produces `macos/Voice/build/Voice.app`, which the pi-voice extension launches for you — there is nothing to open by hand (opened by hand with no stdin pipe it sees EOF and quits). `run-browser.sh` starts the realtime backend (`:8766`). When the extension launches Voice, it starts that backend if needed, and replaces one that is not running this checkout's current code (stale, foreign, unknown, or hung).
 
-The default model path is `z-ai/glm-5.3-flash` through OpenRouter. Speech-to-text runs **on this Mac** through Apple's on-device engine, so there is no key, no metering, and nothing that expires: a turn transcribes punctuated in ~170ms, including the helper process launch, and a live 33s turn with four pauses took 370ms. It covers 45 locales; `STT_LOCALE` picks one, because the engine has no auto-detect. `macos/SpeechHelper/build/speech-helper --locales` lists what this Mac supports and which models are already installed, and a locale's model downloads itself the first time the backend starts with it. It transcribes fillers literally and does not know proper nouns it has no context for, which a hosted service tidied.
+The default model path is `anthropic/claude-haiku-5.5` through OpenRouter. Speech-to-text runs **on this Mac** through Apple's on-device engine, so there is no key, no metering, and nothing that expires: a turn transcribes punctuated in ~170ms, including the helper process launch, and a live 33s turn with four pauses took 370ms. It covers 45 locales; `STT_LOCALE` picks one, because the engine has no auto-detect. `macos/SpeechHelper/build/speech-helper --locales` lists what this Mac supports and which models are already installed, and a locale's model downloads itself the first time the backend starts with it. It transcribes fillers literally and does not know proper nouns it has no context for, which a hosted service tidied.
 
 Text-to-speech uses **Apple's Siri voices** (`en-US-F` by default) through
 [siri-tts](https://github.com/maximilianromer/siri-tts-cli), which reaches the neural voices Apple
@@ -56,7 +56,7 @@ The launch scripts read secrets from `~/.config/chatbot/env` (or `CHATBOT_ENV`),
 | `TTS` | `siri` | TTS backend: `siri` (Apple's Siri voices, the only voice) |
 | `SIRI_VOICE` | `en-US-F` | Siri voice name; `siri-tts voices --available` lists what this Mac has installed |
 | `SIRI_TTS_BIN` | `~/.local/bin/siri-tts` | Path to the siri-tts binary |
-| `MODEL` | `z-ai/glm-5.3-flash` | OpenRouter Responses API model ID |
+| `MODEL` | `anthropic/claude-haiku-5.5` | OpenRouter Responses API model ID |
 | `PORT` | `8766` | Realtime backend port for a manual `./run-browser.sh`; Voice.app always connects to 8766 unless `voice.wsUrl` is set |
 | `VAD_MIN_SILENCE_MS` | `2000` | Silence (ms) before a spoken turn is considered finished. Higher keeps pauses inside one turn instead of splitting it; lower answers faster after you truly stop |
 | `VAD_THRESH` | `0.6` | VAD confidence threshold; higher = fewer false voice triggers |
