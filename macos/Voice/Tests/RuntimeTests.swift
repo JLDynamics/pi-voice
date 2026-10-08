@@ -52,6 +52,15 @@ struct RuntimeTests {
         assert(!VoiceToolFollowUp.shouldSend(pendingTools: 0, responseActive: true))
         assert(!VoiceToolFollowUp.shouldSend(pendingTools: 1, responseActive: true))
         assert(VoiceToolFollowUp.shouldSend(pendingTools: 0, responseActive: false))
+        // A handoff the model made without a word must still be acknowledged
+        // (live runs: text='' with spawn_thinking every time), once, and never
+        // on top of a reply that already spoke or was cut off.
+        assert(VoiceToolFollowUp.shouldAcknowledgeHandoff(handoffCalled: true, spokenText: " \n", cancelled: false))
+        assert(!VoiceToolFollowUp.shouldAcknowledgeHandoff(handoffCalled: true, spokenText: "On it.", cancelled: false))
+        assert(!VoiceToolFollowUp.shouldAcknowledgeHandoff(handoffCalled: true, spokenText: "", cancelled: true))
+        assert(!VoiceToolFollowUp.shouldAcknowledgeHandoff(handoffCalled: false, spokenText: "", cancelled: false))
+        assert(!VoiceToolFollowUp.shouldAcknowledgeHandoff(handoffCalled: true, spokenText: "", cancelled: false, muted: true),
+               "a muted handoff is dropped by the extension; do not promise it")
 
         let scope = VoiceWorkScope()
         let oldGeneration = scope.generation

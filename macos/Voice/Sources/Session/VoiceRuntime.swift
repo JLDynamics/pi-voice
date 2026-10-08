@@ -9,6 +9,18 @@ enum VoiceToolFollowUp {
     static func shouldSend(pendingTools: Int, responseActive: Bool) -> Bool {
         pendingTools == 0 && !responseActive
     }
+
+    /// `spawn_thinking` and `stop_thinking` are fire-and-forget: nothing asks
+    /// the model to continue after them. The model is told to say a short line
+    /// with the call, but in practice it emits the call alone, so asking for
+    /// work was answered with silence. When a finished response carried one of
+    /// them and spoke nothing, ask once more so Agent acknowledges it. Never
+    /// when it already spoke (that would say it twice) or was cancelled, and
+    /// not while muted: the extension drops a muted handoff, so "on it" would
+    /// promise work that never starts.
+    static func shouldAcknowledgeHandoff(handoffCalled: Bool, spokenText: String, cancelled: Bool, muted: Bool = false) -> Bool {
+        handoffCalled && !cancelled && !muted && spokenText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
 }
 
 /// When `speech_started` may steal the panel.

@@ -55,6 +55,9 @@ final class LiveVoiceBackend: VoiceBackend, HeadlessBackend {
     /// Server-run tool calls in flight, by call_id, so the matching output can
     /// be reported under the tool's name.
     private var serverToolNames: [String: String] = [:]
+    /// call_id of a spawn_thinking/stop_thinking in the response now streaming,
+    /// so `response.done` can ask for an acknowledgement if it spoke nothing.
+    private var handoffAckCallId: String?
 
     private var agentText = ""
     private var activeResponseId = ""
@@ -589,16 +592,23 @@ final class LiveVoiceBackend: VoiceBackend, HeadlessBackend {
             onState?(.agentSpeaking)
 
         case "response.done":
+            var cancelled = false
             if let response = json["response"] as? [String: Any],
                let id = response["id"] as? String {
                 if !activeResponseId.isEmpty, id != activeResponseId { return }
                 if id == activeResponseId { activeResponseId = "" }
                 if response["status"] as? String == "cancelled" {
+                    cancelled = true
                     rememberCancelled(id)
                     cancelToolWork()
                     audio.clearPlayback()
                 }
             }
+            let ackCallId = handoffAckCallId
+            handoffAckCallId = nil
+            let acknowledge = VoiceToolFollowUp.shouldAcknowledgeHandoff(
+                handoffCalled: ackCallId != nil, spokenText: agentText, cancelled: cancelled, muted: muted
+            )
             if !serverToolNames.isEmpty {
                 // A server-run tool whose output never arrived (the turn was
                 // interrupted mid-call) must not leave the pill spinning.
@@ -616,6 +626,10 @@ final class LiveVoiceBackend: VoiceBackend, HeadlessBackend {
                ) {
                 responseRequestPending = false
                 sendResponseCreate()
+            }
+            if acknowledge, let ackCallId, !responseCreateRequested, !responseRequestPending {
+                NSLog("[LiveVoice] handoff %@ was silent; asking for an acknowledgement", ackCallId)
+                requestFollowUp(callId: ackCallId)
             }
 
         case "response.function_call_arguments.done":
@@ -855,6 +869,7 @@ final class LiveVoiceBackend: VoiceBackend, HeadlessBackend {
         }
         toolScope.cancel()
         serverToolNames.removeAll()
+        handoffAckCallId = nil
         onToolsCancelled?()
         responseRequestPending = false
     }
@@ -871,12 +886,17 @@ final class LiveVoiceBackend: VoiceBackend, HeadlessBackend {
             let id = UUID().uuidString
             piJobs.ask(id: id, brief: brief)
             startPiProgressLoop(id: id)
-            sendToolOutput(callId: callId, output: Self.json(["status": "queued", "id": id]))
+            sendToolOutput(callId: callId, output: Self.json([
+                "status": "queued", "id": id,
+                "note": "Pi has the task. If you have not said so yet, say one short acknowledgement. Do not call spawn_thinking again for this.",
+            ]))
+            handoffAckCallId = callId
             appendPiJournal(PiJobTracker.journalLine(now: Date(), event: "queued", id: id, brief: brief))
             if !brief.isEmpty { onSpawnThinking?(id, brief) }
             return
         }
         if name == "stop_thinking" {
+            handoffAckCallId = callId
             if piJobs.hasActive {
                 sendToolOutput(callId: callId, output: "{\"status\":\"stopping\"}")
                 onStopThinking?()
