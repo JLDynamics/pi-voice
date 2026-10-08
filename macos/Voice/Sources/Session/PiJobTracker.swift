@@ -312,6 +312,14 @@ struct PiJobTracker {
 
     // MARK: - Journal
 
+    /// Foundation ignores TMPDIR on macOS; match the extension's lease/stderr paths.
+    static func journalDirectory(environment: [String: String] = ProcessInfo.processInfo.environment) -> URL {
+        if let tmpdir = environment["TMPDIR"]?.trimmingCharacters(in: .whitespacesAndNewlines), !tmpdir.isEmpty {
+            return URL(fileURLWithPath: tmpdir, isDirectory: true)
+        }
+        return FileManager.default.temporaryDirectory
+    }
+
     static func journalLine(now: Date, event: String, id: String, brief: String, extra: [String: Any] = [:]) -> String {
         var object: [String: Any] = [
             "t": ISO8601DateFormatter().string(from: now),

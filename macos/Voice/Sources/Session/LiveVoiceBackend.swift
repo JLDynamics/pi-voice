@@ -342,7 +342,7 @@ final class LiveVoiceBackend: VoiceBackend, HeadlessBackend {
     }
 
     private func appendPiJournal(_ line: String) {
-        PiJobTracker.appendJournal(directory: FileManager.default.temporaryDirectory, line: line)
+        PiJobTracker.appendJournal(directory: PiJobTracker.journalDirectory(), line: line)
     }
 
     func ingestUserText(_ text: String) {

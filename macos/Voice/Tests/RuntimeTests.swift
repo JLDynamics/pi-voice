@@ -711,6 +711,9 @@ struct RuntimeTests {
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let line = PiJobTracker.journalLine(now: t0, event: "queued", id: "w1", brief: "map the project")
         assert(line.contains("\"event\":\"queued\""), "journal line is JSON")
+        assert(PiJobTracker.journalDirectory(environment: ["TMPDIR": "/tmp/pv-journal-test/"]).path == "/tmp/pv-journal-test")
+        assert(PiJobTracker.journalDirectory(environment: [:]) == FileManager.default.temporaryDirectory)
+        assert(PiJobTracker.journalDirectory(environment: ["TMPDIR": "  "]) == FileManager.default.temporaryDirectory)
         PiJobTracker.appendJournal(directory: dir, line: line)
         PiJobTracker.appendJournal(directory: dir, line: String(repeating: "x", count: 100), maxBytes: 64)
         let logged = (try? String(contentsOf: dir.appendingPathComponent(PiJobTracker.journalFileName), encoding: .utf8)) ?? ""
