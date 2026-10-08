@@ -51,6 +51,16 @@ export class Conversation {
     catch (error) { this.notice(`Voice history is not being saved: ${String(error)}`); }
   }
 
+  /** Dated slice of the shared log for the next Pi handoff. Empty if the log is closed. */
+  handoffContext(): string {
+    try {
+      return this.store?.loadReplay()[0]?.text ?? "";
+    } catch (error) {
+      this.notice(`Voice history is not being read: ${String(error)}`);
+      return "";
+    }
+  }
+
   fresh(): void { this.select(newConversationId()); }
 
   list() {

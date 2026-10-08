@@ -1,7 +1,7 @@
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 import type { Effect, Job, ShortResult, Step, StepWorld, UserText, VoiceState, WorkId } from "./voice.ts";
 import { RESULT_MAX, strip } from "./voice.ts";
-import { workHistoryTurn } from "./history.ts";
+import { handoffHistoryTurn, workHistoryTurn } from "./history.ts";
 
 function keep(state: VoiceState, effects: Effect[] = []): Step {
   return { state, effects };
@@ -53,6 +53,7 @@ export function openJob(state: VoiceState, id: WorkId, brief: UserText, world: S
   const next: VoiceState = { ...state, job };
   effects.push(
     { tag: "sendWork", id, brief, deliver },
+    { tag: "recordTurn", turn: handoffHistoryTurn(brief), turnKind: "work" },
     paint(next, world.now),
   );
   return { state: next, effects };
@@ -130,9 +131,14 @@ export function lastUserText(branch: SessionEntry[]): UserText | undefined {
   }
 }
 
-/** An id on the delivered Pi message links one agent answer to one Luna job. */
-export function jobPrompt(id: WorkId, brief: UserText): string {
-  return `${brief}\n\n[Pi voice job id: ${id}]`;
+/**
+ * An id on the delivered Pi message links one agent answer to one voice job.
+ * Optional context is the shared-log pack. The job id stays last so routing still matches.
+ */
+export function jobPrompt(id: WorkId, brief: UserText, context = ""): string {
+  const background = context.trim();
+  const task = background ? `${background}\n\n${brief}` : brief;
+  return `${task}\n\n[Pi voice job id: ${id}]`;
 }
 
 export function lastUserJobId(branch: SessionEntry[]): WorkId | undefined {

@@ -65,9 +65,8 @@ protocol VoiceBackend: AnyObject {
     func setMuted(_ muted: Bool)
     func interrupt()
     func speak(_ text: String)
-    /// Saved transcript to replay into the live conversation once the server
-    /// acknowledges the session (mirrors the web `_replayHistory`, last 20).
-    /// Each entry is (role, text) with role in user/assistant/tool.
+    /// Saved startup pack to inject once the server acknowledges the session.
+    /// Each entry is (role, text). The pack is one user-role item.
     func setHistory(_ messages: [(role: String, text: String, name: String?)])
     /// Push the current Settings tool toggles into a live session.
     func refreshTools()

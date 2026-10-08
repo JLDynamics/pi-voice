@@ -1,6 +1,18 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { fullResult, RESULT_MAX } from "./voice.ts";
+import { asUser, asWork, fullResult, RESULT_MAX } from "./voice.ts";
+import { jobIdFromText, jobPrompt } from "./work.ts";
+
+describe("jobPrompt", () => {
+  it("prepends shared-log context and keeps the job id last", () => {
+    const context = "[Background context from the shared conversation. It may be incomplete or stale.]";
+    const prompt = jobPrompt(asWork("w1"), asUser("read the file"), context);
+    assert.match(prompt, /^\[Background/);
+    assert.match(prompt, /read the file\n\n\[Pi voice job id: w1\]$/);
+    assert.equal(jobIdFromText(prompt), asWork("w1"));
+    assert.equal(jobPrompt(asWork("w1"), asUser("read the file")), "read the file\n\n[Pi voice job id: w1]");
+  });
+});
 
 describe("fullResult", () => {
   it("passes Pi's answer through whole, so Luna decides what matters", () => {

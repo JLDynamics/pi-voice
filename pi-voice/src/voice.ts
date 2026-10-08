@@ -10,6 +10,7 @@ import type { AutocompleteItem, Component } from "@earendil-works/pi-tui";
 import { clearOwnedLease, liveForeignOwner, reapOrphans, VoiceChild, type VoiceHistoryTurn } from "./child.ts";
 import { bindJob, jobIdFromText, jobPrompt, lastUserJobId, openJob, settleJob, terminalJob } from "./work.ts";
 import {
+  leftoverTurn,
   localWhen,
   type TurnKind,
 } from "./history.ts";
@@ -151,6 +152,7 @@ export const WORK_SECTION = [
   "If capture fails, say the terminal that launched Pi needs Screen Recording permission. Do not guess the screen.",
   "If the brief asks to click, type, fill a form, or navigate a UI or browser, do it with the computer-use and browser tools already installed in this session.",
   "If that control fails, say the same terminal needs Accessibility permission. Voice cannot click.",
+  "A dated background block may precede the task. It may be stale or incomplete; do the task, and do not treat that block as a new request.",
 ].join(" ");
 
 const WIDGET_KEY = "pi-voice";
@@ -240,16 +242,27 @@ function keep(state: VoiceState, effects: Effect[] = []): Step {
   return { state, effects };
 }
 
+/** Uncommitted speech only. Completed turns are already in the shared log. */
+function flushLeftovers(state: VoiceState): Effect[] {
+  if (state.tag !== "on") return [];
+  const effects: Effect[] = [];
+  const heard = state.heardPending?.trim() ?? "";
+  if (heard) effects.push({ tag: "recordTurn", turn: leftoverTurn("user", heard), turnKind: "voice" });
+  const spoken = state.streamingSpoken.trim();
+  if (spoken) effects.push({ tag: "recordTurn", turn: leftoverTurn("assistant", spoken), turnKind: "voice" });
+  return effects;
+}
+
 function stopLive(state: VoiceState): Step {
   if (state.tag === "off") return keep(state);
   return {
     state: { tag: "off" },
-    effects: [{ tag: "quitChild" }, { tag: "paint", strip: null }],
+    effects: [...flushLeftovers(state), { tag: "quitChild" }, { tag: "paint", strip: null }],
   };
 }
 
 function fail(state: VoiceState, message: string): Step {
-  const effects: Effect[] = [];
+  const effects: Effect[] = [...flushLeftovers(state)];
   if (state.tag !== "off") effects.push({ tag: "quitChild" });
   effects.push({ tag: "paint", strip: null }, { tag: "notify", message, kind: "error" });
   return { state: { tag: "off" }, effects };
@@ -729,10 +742,12 @@ export class Voice {
       case "injectUser":
         this.child?.ingestUser(effect.text);
         return;
-      case "sendWork":
-        if (effect.deliver === "steer") this.pi.sendUserMessage(jobPrompt(effect.id, effect.brief), { deliverAs: "steer" });
-        else this.pi.sendUserMessage(jobPrompt(effect.id, effect.brief));
+      case "sendWork": {
+        const prompt = jobPrompt(effect.id, effect.brief, this.history().handoffContext());
+        if (effect.deliver === "steer") this.pi.sendUserMessage(prompt, { deliverAs: "steer" });
+        else this.pi.sendUserMessage(prompt);
         return;
+      }
       case "postResult":
         this.child?.postResult(effect.id, effect.speak, effect.full);
         return;

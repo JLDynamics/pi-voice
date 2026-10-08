@@ -324,6 +324,36 @@ describe("handleCommand", () => {
     assert.equal(paint && paint.tag === "paint" ? paint.strip : "x", null);
   });
 
+  it("stop flushes uncommitted transcript as leftover history", () => {
+    const next = handleCommand(on({
+      heardPending: asUser("what about the port"),
+      heardItemId: "h1",
+      streamingSpoken: "The port is",
+      spokenItemId: "s1",
+      lastSpoken: "already saved",
+    }), { tag: "stop" });
+    assert.equal(next.state.tag, "off");
+    assert.deepEqual(tags(next.effects), ["recordTurn", "recordTurn", "quitChild", "paint"]);
+    const records = next.effects.filter((effect) => effect.tag === "recordTurn");
+    assert.equal(records[0] && records[0].tag === "recordTurn" ? records[0].turn.role : undefined, "user");
+    assert.match(records[0] && records[0].tag === "recordTurn" ? records[0].turn.text : "", /Leftover transcript, not a new request/);
+    assert.match(records[0] && records[0].tag === "recordTurn" ? records[0].turn.text : "", /what about the port/);
+    assert.equal(records[1] && records[1].tag === "recordTurn" ? records[1].turn.role : undefined, "assistant");
+    assert.match(records[1] && records[1].tag === "recordTurn" ? records[1].turn.text : "", /The port is/);
+    assert.doesNotMatch(records.map((effect) => effect.tag === "recordTurn" ? effect.turn.text : "").join("\n"), /already saved/);
+  });
+
+  it("a child failure flushes the same leftover transcript", () => {
+    const next = step(
+      on({ heardPending: asUser("wait"), streamingSpoken: "Sure" }),
+      { tag: "childExit", code: 1 },
+      world(),
+    );
+    assert.equal(next.state.tag, "off");
+    assert.deepEqual(tags(next.effects).slice(0, 4), ["recordTurn", "recordTurn", "quitChild", "paint"]);
+    assert.equal(next.effects.at(-1)?.tag, "notify");
+  });
+
   it("stop + off → no-op", () => {
     const next = handleCommand(off(), { tag: "stop" });
     assert.equal(next.state.tag, "off");
@@ -484,8 +514,10 @@ describe("work", () => {
     assert.equal(next.state.job.brief, "Tesla stock price");
     assert.equal(next.state.job.bound, false);
     assert.equal(next.state.job.afterEntryId, "leaf0");
-    // Pi already shows the dispatched brief as its normal user message.
-    assert.deepEqual(tags(next.effects), ["sendWork", "paint"]);
+    assert.deepEqual(tags(next.effects), ["sendWork", "recordTurn", "paint"]);
+    const recorded = next.effects.find((effect) => effect.tag === "recordTurn");
+    assert.equal(recorded && recorded.tag === "recordTurn" ? recorded.turnKind : undefined, "work");
+    assert.match(recorded && recorded.tag === "recordTurn" ? recorded.turn.text : "", /^\[Pi handoff\] Tesla stock price$/);
     const send = next.effects.find((effect) => effect.tag === "sendWork");
     assert.equal(send && send.tag === "sendWork" ? send.deliver : undefined, "plain");
     assert.equal(send && send.tag === "sendWork" ? send.brief : undefined, "Tesla stock price");
@@ -667,7 +699,8 @@ describe("agentSettled", () => {
     assert.equal(post && post.tag === "postResult" ? post.id : undefined, "w1");
     const recorded = next.effects.find((effect) => effect.tag === "recordTurn");
     assert.equal(recorded && recorded.tag === "recordTurn" ? recorded.turnKind : undefined, "work");
-    assert.match(recorded && recorded.tag === "recordTurn" ? recorded.turn.text : "", /^\[Earlier, Pi finished/);
+    assert.match(recorded && recorded.tag === "recordTurn" ? recorded.turn.text : "", /^\[Pi result /);
+    assert.match(recorded && recorded.tag === "recordTurn" ? recorded.turn.text : "", /Tesla is around \$420/);
   });
 
   it("settling with no answer reports failed, never postResult", () => {
@@ -935,6 +968,7 @@ describe("onBeforeAgentStart", () => {
     assert.match(WORK_SECTION, /Accessibility permission/);
     assert.match(WORK_SECTION, /Voice cannot click/);
     assert.doesNotMatch(WORK_SECTION, /screenshot/);
+    assert.match(WORK_SECTION, /dated background block may precede the task/);
   });
 });
 

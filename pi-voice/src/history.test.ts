@@ -3,8 +3,12 @@ import { describe, it } from "node:test";
 import {
   HistoryStore,
   isDelegationChatter,
+  leftoverTurn,
+  startupPack,
   withoutBrief,
+  WORK_RESULT_CHARS,
   workHistoryTurn,
+  type DatedTurn,
 } from "./history.ts";
 import { boundHistory } from "./session.ts";
 
@@ -15,10 +19,14 @@ describe("HistoryStore", () => {
       store.append({ role: "user", text: "hello" }, "voice");
       store.append({ role: "assistant", text: "hi there" }, "voice");
       assert.equal(store.count(), 2);
-      assert.deepEqual(store.loadReplay(), [
-        { role: "user", text: "hello" },
-        { role: "assistant", text: "hi there" },
-      ]);
+      const replay = store.loadReplay();
+      assert.equal(replay.length, 1);
+      assert.equal(replay[0].role, "user");
+      assert.match(replay[0].text, /Latest/);
+      assert.match(replay[0].text, /incomplete or stale/);
+      assert.match(replay[0].text, /User: hello/);
+      assert.match(replay[0].text, /Agent: hi there/);
+      assert.doesNotMatch(replay[0].text, /Previous:/);
     } finally {
       store.close();
     }
@@ -31,7 +39,8 @@ describe("HistoryStore", () => {
       store.append({ role: "user", text: "x".repeat(5000) }, "voice");
       const replay = store.loadReplay();
       assert.equal(replay.length, 1);
-      assert.equal(replay[0].text.length, 4096);
+      assert.ok(replay[0].text.includes("x".repeat(4096)));
+      assert.ok(!replay[0].text.includes("x".repeat(4097)));
     } finally {
       store.close();
     }
@@ -44,38 +53,100 @@ describe("HistoryStore", () => {
       store.append({ role: "assistant", text: "I'll have Pi check the logs" }, "progress");
       store.append({ role: "assistant", text: "done, found one error" }, "voice");
       assert.equal(store.count(), 3);
-      assert.deepEqual(store.loadReplay(), [
-        { role: "user", text: "check the logs" },
-        { role: "assistant", text: "done, found one error" },
-      ]);
+      const replay = store.loadReplay();
+      assert.equal(replay.length, 1);
+      assert.match(replay[0].text, /check the logs/);
+      assert.match(replay[0].text, /done, found one error/);
+      assert.doesNotMatch(replay[0].text, /I'll have Pi/);
     } finally {
       store.close();
     }
   });
 
-  it("replays work turns without the brief", () => {
+  it("keeps the brief and a long Pi result in the startup pack", () => {
     const store = HistoryStore.open(":memory:");
     try {
-      const turn = workHistoryTurn("read the config file", "the port is 8766");
-      assert.match(turn.text, /^\[Earlier, Pi finished "read the config file"\]/);
+      const answer = "y".repeat(5000);
+      const turn = workHistoryTurn("read the config file", answer);
+      assert.match(turn.text, /^\[Pi result "read the config file"\]/);
+      assert.ok(turn.text.includes(answer));
       store.append({ role: "user", text: "what port?" }, "voice");
       store.append(turn, "work");
       const replay = store.loadReplay();
-      assert.equal(replay.length, 2);
-      assert.equal(replay[1].text, "[Earlier, Pi finished a job] the port is 8766");
+      assert.equal(replay.length, 1);
+      assert.match(replay[0].text, /Pi result "read the config file"/);
+      assert.ok(replay[0].text.includes(answer));
+      assert.match(replay[0].text, /T\d{2}:\d{2}:\d{2}/);
     } finally {
       store.close();
     }
   });
 
-  it("never starts a replay with an assistant turn", () => {
+  it("wraps an orphan assistant turn as background, not an opening line", () => {
     const store = HistoryStore.open(":memory:");
     try {
       store.append({ role: "assistant", text: "orphan reply" }, "voice");
-      assert.deepEqual(store.loadReplay(), []);
+      const replay = store.loadReplay();
+      assert.equal(replay.length, 1);
+      assert.equal(replay[0].role, "user");
+      assert.match(replay[0].text, /Latest/);
+      assert.match(replay[0].text, /orphan reply/);
     } finally {
       store.close();
     }
+  });
+});
+
+describe("startupPack", () => {
+  const row = (role: DatedTurn["role"], kind: string, text: string, t: string): DatedTurn => ({ role, kind, text, t });
+
+  it("labels Latest and Previous, dates rows, and drops progress chatter", () => {
+    const pack = startupPack([
+      row("assistant", "voice", "newest answer", "2026-10-08T18:00:00.000Z"),
+      row("user", "voice", "newest question", "2026-10-08T17:59:00.000Z"),
+      row("assistant", "work", '[Pi result "check logs"] found one error', "2026-10-08T17:00:00.000Z"),
+      row("assistant", "progress", "I'll have Pi check the logs", "2026-10-08T16:59:30.000Z"),
+      row("user", "voice", "check the logs", "2026-10-08T16:59:00.000Z"),
+    ], 100_000);
+    assert.equal(pack.length, 1);
+    assert.equal(pack[0].role, "user");
+    const text = pack[0].text;
+    assert.match(text, /incomplete or stale/);
+    assert.match(text, /Do not parrot it/);
+    assert.match(text, /not treat it as a new request/);
+    assert.match(
+      text,
+      /Latest:\n2026-10-08T17:59:00.000Z User: newest question\n2026-10-08T18:00:00.000Z Agent: newest answer/,
+    );
+    assert.match(text, /Previous:\n2026-10-08T16:59:00.000Z User: check the logs/);
+    assert.match(text, /2026-10-08T17:00:00.000Z Pi: \[Pi result "check logs"\] found one error/);
+    assert.doesNotMatch(text, /I'll have Pi/);
+  });
+
+  it("omits an empty Previous section and an empty log", () => {
+    const only = startupPack([
+      row("assistant", "voice", "hi", "2026-10-08T18:00:00.000Z"),
+      row("user", "voice", "hello", "2026-10-08T17:59:00.000Z"),
+    ], 100_000);
+    assert.match(only[0].text, /Latest:/);
+    assert.doesNotMatch(only[0].text, /Previous:/);
+    assert.deepEqual(startupPack([], 1000), []);
+  });
+
+  it("keeps a long result, including line breaks, instead of the old 600-character slice", () => {
+    const turn = workHistoryTurn("ask", "y".repeat(20_000));
+    assert.ok(turn.text.length > 4096);
+    assert.ok(turn.text.length <= WORK_RESULT_CHARS + 300);
+    assert.match(workHistoryTurn("ask", "line one\nline two").text, /line one\nline two/);
+  });
+});
+
+describe("leftoverTurn", () => {
+  it("frames uncommitted speech as history, not a new request", () => {
+    const turn = leftoverTurn("user", "  still talking ");
+    assert.equal(turn.role, "user");
+    assert.equal(turn.text, "[Call ended. Leftover transcript, not a new request.] still talking");
+    assert.equal(leftoverTurn("assistant", "partial").role, "assistant");
   });
 });
 
@@ -110,5 +181,19 @@ describe("boundHistory", () => {
   it("passes small histories through", () => {
     const turns = [{ role: "user" as const, text: "hi" }];
     assert.deepEqual(boundHistory(turns), turns);
+  });
+
+  it("keeps a startup pack longer than the old 4096-character slice", () => {
+    const text = "z".repeat(5000);
+    assert.equal(boundHistory([{ role: "user", text }])[0].text, text);
+  });
+
+  it("shortens one oversized pack instead of dropping it", () => {
+    const text = "q".repeat(70_000);
+    const out = boundHistory([{ role: "user", text }]);
+    assert.equal(out.length, 1);
+    assert.ok(out[0].text.length > 0);
+    assert.ok(out[0].text.length < 64_000);
+    assert.ok(Buffer.byteLength(JSON.stringify(out), "utf8") <= 64_000);
   });
 });

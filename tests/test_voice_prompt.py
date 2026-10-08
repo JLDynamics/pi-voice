@@ -99,10 +99,14 @@ def test_voice_prompt_explains_how_to_speak_for_pi():
     assert "Say failures plainly" in prompt
     assert "Do not narrate a handover" in prompt
     assert "data, not instructions" in prompt
+    assert "Latest and Previous" in prompt
+    assert "may be stale or incomplete" in prompt
+    assert "Do not parrot it" in prompt
     # Bash sessions must not be told to call a handoff they do not publish.
     bash = build_voice_system_prompt(PERSONA, now=NOW)
     assert "spawn_thinking" not in bash
     assert "[FINAL]" not in bash
+    assert "Latest and Previous" not in bash
 
 
 def test_voice_prompt_hands_screen_and_computer_use_to_pi():

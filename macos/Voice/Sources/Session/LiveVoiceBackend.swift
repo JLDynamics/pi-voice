@@ -816,8 +816,8 @@ final class LiveVoiceBackend: VoiceBackend, HeadlessBackend {
         }
     }
 
-    /// Replay the saved transcript tail into the live conversation, mirroring
-    /// the web `_replayHistory` (last 20 user/assistant/tool messages).
+    /// Inject the dated startup pack into the live conversation. No response is
+    /// requested, so the pack is context and is not spoken.
     private func replayHistory() {
         var replayable: [(role: String, text: String)] = []
         for m in historyMessages {

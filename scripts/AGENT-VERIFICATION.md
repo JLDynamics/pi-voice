@@ -13,10 +13,15 @@ with isolated config directories; mock only OpenRouter. State any untested
 boundary in the final response.
 
 For history changes, follow the full chain:
-`voice.ts` → `VoiceChild.spawn` / `headlessChildEnv` → `VoiceApp.swift` →
-`VoiceSession.seedHistory` → `LiveVoiceBackend.replayHistory`.
-Verify restart recall beyond 20 messages, a genuinely empty new conversation,
-stable resume-list numbering, and a corrupt-cabinet fallback. Test the public
+`Conversation.replay` (dated Latest/Previous startup pack) and `handoffContext` on
+`sendWork`, plus the leftover flush in `stopLive` → `VoiceChild.spawn` /
+`headlessChildEnv` `VOICE_HISTORY` → `VoiceApp.swift` → `VoiceSession.seedHistory` →
+`LiveVoiceBackend.replayHistory` (`conversation.item.create`, no response).
+The shared log is `history-<id>.sqlite`, keyed by thread id. `session.json` is only
+the folder → id map. Pi's session cannot take a silent append, so each handoff
+carries the pack and the job-id marker stays last. Verify a restart rebuilds the
+pack, `/voice stop` records uncommitted transcript as leftover history, `/voice new`
+stays empty, resume by id, and a corrupt-cabinet fallback. Test the public
 command/lifecycle rather than manually reproducing only its reducer effects.
 
 For delegation changes, verify success, partial failure, explicit stop, and
