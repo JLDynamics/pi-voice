@@ -176,7 +176,9 @@ export function muteHint(): string {
 }
 
 /** Name shown next to the voice assistant's lines in the transcript (the persona is still Luna). */
-export const AGENT_LABEL = "agent";
+export const AGENT_LABEL = "Agent";
+/** Name shown next to the user's spoken lines in the transcript. */
+export const USER_LABEL = "You";
 
 /** Pi crashes if any custom render line is wider than the terminal. */
 export function faceLines(who: string, text: string, width: number): string[] {
@@ -331,7 +333,7 @@ export function handleCommand(state: VoiceState, command: VoiceCommand): Step {
 
 export function step(state: VoiceState, event: VoiceEvent, world: StepWorld): Step {
   if (event.tag === "requestError") return keep(state, [{ tag: "notify", kind: "error",
-    message: `${event.message} Your message is saved. You can ask Luna to retry.` }]);
+    message: `${event.message} Your message is saved. You can ask ${AGENT_LABEL} to retry.` }]);
   if (event.tag === "shutdown") return handleCommand(state, { tag: "stop" });
   if (event.tag === "speechStarted") {
     if (state.tag !== "on" || !state.streamingSpoken || !state.spokenItemId) return keep(state);
@@ -542,7 +544,7 @@ export class Voice {
         if (data?.kind === "heard-live" && data.id) {
           if (!voice.heardTexts.has(data.id)) voice.heardTexts.set(data.id, data.text ?? "");
           const id = data.id;
-          return { render: (width: number) => faceLines("you", voice.heardTexts.get(id) ?? "", width), invalidate() {} };
+          return { render: (width: number) => faceLines(USER_LABEL, voice.heardTexts.get(id) ?? "", width), invalidate() {} };
         }
         if (data?.kind === "spoken-live" && data.id) {
           if (!voice.spokenTexts.has(data.id)) voice.spokenTexts.set(data.id, data.text ?? "");
@@ -550,7 +552,7 @@ export class Voice {
           return { render: (width: number) => spokenFaceLines(voice.spokenTexts.get(id) ?? "", width), invalidate() {} };
         }
         if (!data?.text) return;
-        const who = data.kind === "heard" ? "you" : data.kind === "spoken" ? AGENT_LABEL : "pi";
+        const who = data.kind === "heard" ? USER_LABEL : data.kind === "spoken" ? AGENT_LABEL : "pi";
         const text = data.text;
         const face: Component = {
           render: (width: number) => sessionFaceLines(who, text, width, voice.state.tag !== "off"),
@@ -625,8 +627,8 @@ export class Voice {
     const p = prefix.trim().toLowerCase();
     if (!p) return [];
     return [
-      { value: "mute", label: "mute", description: "Mute Luna's mic" },
-      { value: "unmute", label: "unmute", description: "Unmute Luna's mic" },
+      { value: "mute", label: "mute", description: `Mute ${AGENT_LABEL}'s mic` },
+      { value: "unmute", label: "unmute", description: `Unmute ${AGENT_LABEL}'s mic` },
       { value: "stop", label: "stop", description: "Stop voice in this session" },
       { value: "new", label: "new", description: "Start a fresh voice conversation" },
       { value: "resume", label: "resume", description: "List or resume a past voice conversation" },
