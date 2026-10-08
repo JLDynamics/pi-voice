@@ -28,8 +28,8 @@ export default function (pi: ExtensionAPI): void {
 
   pi.on("input", (event, ctx) => voice.onInput(event, ctx));
   pi.on("before_agent_start", (event, ctx) => voice.onBeforeAgentStart(event, ctx));
-  // The shared-log pack goes to the model on each request, not into the chat.
-  pi.on("context", (event) => voice.onContext(event));
+  // Each voice job reaches the model as its <realtime_delegation>, not the chat.
+  pi.on("context", (event, ctx) => voice.onContext(event, ctx));
   pi.on("message_start", (event, ctx) => {
     if (event.message.role === "assistant") {
       announcedAnswer = false;

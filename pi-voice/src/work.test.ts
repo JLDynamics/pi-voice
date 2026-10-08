@@ -1,53 +1,55 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { asUser, asWork, fullResult, RESULT_MAX } from "./voice.ts";
-import { jobIdFromText, jobPrompt, withVoiceContext } from "./work.ts";
+import { DELEGATION_TYPE, delegationsFromBranch, jobIdFromText, jobPrompt, withDelegations } from "./work.ts";
 
 describe("jobPrompt", () => {
   it("is only the brief and the job id, with the id last", () => {
     const prompt = jobPrompt(asWork("w1"), asUser("read the file"));
     assert.equal(prompt, "read the file\n\n[Pi voice job id: w1]");
     assert.equal(jobIdFromText(prompt), asWork("w1"));
-    assert.doesNotMatch(prompt, /Background context|Latest:|Previous:/);
+    assert.doesNotMatch(prompt, /Background context|Latest:|Previous:|realtime_delegation/);
   });
 });
 
-describe("withVoiceContext", () => {
-  const pack = [
-    "[Background context from the shared conversation. It may be incomplete or stale.]",
-    "",
-    "Latest:",
-    "2026-10-08T18:23:59.000Z User: search the latest AI news",
-    "",
-    "Previous:",
-    `2026-10-08T17:20:00.000Z Pi: [Pi result "AI news"] ${"long finding. ".repeat(400).trim()}`,
-  ].join("\n");
+describe("withDelegations", () => {
   const user = (text: string) => ({ role: "user", content: [{ type: "text", text }], timestamp: 1 });
+  const first = "<realtime_delegation>\n  <input>older</input>\n  <transcript_delta>user: older</transcript_delta>\n</realtime_delegation>";
+  const second = "<realtime_delegation>\n  <input>search the latest AI news</input>\n  <transcript_delta>user: what is new\nuser: search the latest AI news</transcript_delta>\n</realtime_delegation>";
 
-  it("puts the whole pack in front of the brief for the model request only", () => {
+  it("swaps every voice job message for its delegation, job id last, on a copy", () => {
     const visible = jobPrompt(asWork("w2"), asUser("search the latest AI news"));
-    const messages = [user(jobPrompt(asWork("w1"), asUser("older"))), { role: "assistant", content: [] }, user(visible)];
-    const out = withVoiceContext(messages, asWork("w2"), pack);
+    const messages = [user(jobPrompt(asWork("w1"), asUser("older"))), { role: "assistant", content: [] }, user(visible), user("typed by hand")];
+    const out = withDelegations(messages, new Map([[asWork("w1"), first], [asWork("w2"), second]]));
     assert.ok(out);
-    const text = out[2].content.map((part: { text: string }) => part.text).join("");
-    // Nothing is trimmed: the model gets the same pack the old visible message carried.
-    assert.equal(text, `${pack}\n\n${visible}`);
-    assert.equal(jobIdFromText(text), asWork("w2"));
-    // The other messages and the original array are untouched.
-    assert.equal(out[0], messages[0]);
+    const text = (at: number) => (out[at].content as { text: string }[]).map((part) => part.text).join("");
+    // Earlier handoffs keep their delegation in later requests, as in Codex.
+    assert.equal(text(0), `${first}\n\n[Pi voice job id: w1]`);
+    assert.equal(text(2), `${second}\n\n[Pi voice job id: w2]`);
+    assert.equal(jobIdFromText(text(2)), asWork("w2"));
     assert.equal(out[1], messages[1]);
-    assert.equal(messages[2].content.length, 1);
+    assert.equal(out[3], messages[3]);
+    // The session's own messages are untouched.
     assert.equal(messages[2].content[0].text, visible);
   });
 
-  it("handles string content and leaves unrelated or empty cases alone", () => {
+  it("handles string content and leaves unrelated cases alone", () => {
     const visible = jobPrompt(asWork("w1"), asUser("check"));
-    const out = withVoiceContext([{ role: "user", content: visible }], asWork("w1"), pack);
-    assert.equal(out?.[0].content[0].text, `${pack}\n\n${visible}`);
-    assert.equal(withVoiceContext([user(visible)], asWork("other"), pack), undefined);
-    assert.equal(withVoiceContext([user(visible)], asWork("w1"), "  "), undefined);
+    const map = new Map([[asWork("w1"), first]]);
+    assert.equal(withDelegations([{ role: "user", content: visible }], map)?.[0].content[0].text, `${first}\n\n[Pi voice job id: w1]`);
+    assert.equal(withDelegations([user(visible)], new Map([[asWork("other"), first]])), undefined);
+    assert.equal(withDelegations([user(visible)], new Map()), undefined);
     // An assistant message quoting the id is not the job message.
-    assert.equal(withVoiceContext([{ role: "assistant", content: [{ type: "text", text: visible }] }], asWork("w1"), pack), undefined);
+    assert.equal(withDelegations([{ role: "assistant", content: [{ type: "text", text: visible }] }], map), undefined);
+  });
+
+  it("reads stored delegations from hidden session entries", () => {
+    const branch = [
+      { type: "custom", customType: DELEGATION_TYPE, data: { id: "w1", text: first } },
+      { type: "custom", customType: "pi-voice-face", data: { kind: "heard", text: "hi" } },
+      { type: "custom", customType: DELEGATION_TYPE, data: { id: "w2", text: second } },
+    ];
+    assert.deepEqual([...delegationsFromBranch(branch as never)], [["w1", first], ["w2", second]]);
   });
 });
 

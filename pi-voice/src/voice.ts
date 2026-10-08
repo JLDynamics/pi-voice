@@ -19,8 +19,11 @@ import {
   priorFindings,
   settleJob,
   terminalJob,
-  withVoiceContext,
+  DELEGATION_TYPE,
+  delegationsFromBranch,
+  withDelegations,
 } from "./work.ts";
+import { appendTranscript, delegationForHandoff, setTranscript, type TranscriptEntry } from "./delegation.ts";
 import {
   leftoverTurn,
   localWhen,
@@ -80,6 +83,12 @@ export type VoiceState =
       /** Server item id of the held utterance; its revisions all share it. */
       heardItemId: string | null;
       typedEcho?: { text: string; until: number };
+      /**
+       * Voice transcript since the last handoff (Codex's active transcript): what
+       * was heard and what Agent said aloud, never typed text, tools, or job items.
+       * Each `work` hands it to Pi in the delegation and starts it again empty.
+       */
+      transcript?: readonly TranscriptEntry[];
     };
 
 export type VoiceCommand =
@@ -117,6 +126,8 @@ export type Effect =
   | { tag: "interruptSpeech" }
   | { tag: "injectUser"; text: UserText }
   | { tag: "sendWork"; id: WorkId; brief: UserText; deliver: "plain" | "steer" }
+  /** Store the job's `<realtime_delegation>` hidden in Pi's session, for the model only. */
+  | { tag: "saveDelegation"; id: WorkId; text: string }
   | { tag: "postResult"; id: WorkId; speak: ShortResult; full: string }
   | {
       tag: "sendJobUpdate";
@@ -169,7 +180,8 @@ export const WORK_SECTION = [
   "If capture fails, say the terminal that launched Pi needs Screen Recording permission. Do not guess the screen.",
   "If the brief asks to click, type, fill a form, or navigate a UI or browser, do it with the computer-use and browser tools already installed in this session.",
   "If that control fails, say the same terminal needs Accessibility permission. Voice cannot click.",
-  "A dated background block may precede the task: the voice conversation, which the user does not see in this chat. It may be stale or incomplete; do the task, and do not treat that block as a new request.",
+  "A delegated request arrives as <realtime_delegation>: <input> is the task, and <transcript_delta> is the voice conversation since the previous handoff, which the user does not see in this chat.",
+  "Use the transcript to understand the task; do not treat it as a new request.",
 ].join(" ");
 
 const WIDGET_KEY = "pi-voice";
@@ -421,7 +433,8 @@ export function step(state: VoiceState, event: VoiceEvent, world: StepWorld): St
     const newTurn = state.spokenItemId !== null && id !== state.spokenItemId;
     const text = (newTurn ? "" : state.streamingSpoken) + event.text;
     const next: VoiceState = { ...state, streamingSpoken: text, spokenItemId: id,
-      interruptedSpokenId: id === state.interruptedSpokenId ? state.interruptedSpokenId : null };
+      interruptedSpokenId: id === state.interruptedSpokenId ? state.interruptedSpokenId : null,
+      transcript: appendTranscript(state.transcript ?? [], "assistant", event.text, id) };
     const effects: Effect[] = [];
     if (newTurn && state.streamingSpoken) {
       effects.push({ tag: "upsertFace", id: state.spokenItemId!, kind: "spoken", text: state.streamingSpoken.trim(), final: true });
@@ -471,6 +484,7 @@ export function step(state: VoiceState, event: VoiceEvent, world: StepWorld): St
       heardPending: text,
       heardItemId: itemId,
       typedEcho: undefined,
+      transcript: setTranscript(state.transcript ?? [], "user", text, itemId),
     };
     effects.push({ tag: "upsertFace", id: itemId, kind: "heard", text, final: false });
     effects.push({ tag: "paint", strip: strip(next, world.now) });
@@ -488,7 +502,8 @@ export function step(state: VoiceState, event: VoiceEvent, world: StepWorld): St
       effects.push({ tag: "recordTurn", turn: { role: "user", text: state.heardPending }, turnKind: "voice" });
     }
     const id = event.itemId || state.spokenItemId || `luna:${world.now}`;
-    const next: VoiceState = { ...state, lastSpoken: text, streamingSpoken: "", spokenItemId: null, heardPending: null, heardItemId: null };
+    const next: VoiceState = { ...state, lastSpoken: text, streamingSpoken: "", spokenItemId: null, heardPending: null, heardItemId: null,
+      transcript: setTranscript(state.transcript ?? [], "assistant", text, id) };
     effects.push({ tag: "upsertFace", id, kind: "spoken", text, final: true }, { tag: "paint", strip: strip(next, world.now) });
     effects.push({
       tag: "recordTurn",
@@ -508,14 +523,19 @@ export function step(state: VoiceState, event: VoiceEvent, world: StepWorld): St
     // request first, or the search appears in the transcript before the words
     // that prompted it. The later `spoken` event must not save it again.
     const pending = state.heardPending;
-    const ready = pending ? { ...state, heardPending: null, heardItemId: null } : state;
+    // Like Codex, the handoff takes the transcript so far and the next one starts empty.
+    const delegation: Effect = { tag: "saveDelegation", id: event.id,
+      text: delegationForHandoff(state.transcript ?? [], event.brief) };
+    const ready: VoiceState = pending
+      ? { ...state, heardPending: null, heardItemId: null, transcript: [] }
+      : { ...state, transcript: [] };
     const job = openJob(ready, event.id, event.brief, world);
     const record: Effect[] = pending
       ? [{ tag: "recordTurn", turn: { role: "user", text: pending }, turnKind: "voice" as TurnKind }]
       : [];
     return pending
-      ? { state: job.state, effects: [{ tag: "upsertFace", id: state.heardItemId!, kind: "heard", text: pending, final: true }, ...record, ...job.effects] }
-      : job;
+      ? { state: job.state, effects: [{ tag: "upsertFace", id: state.heardItemId!, kind: "heard", text: pending, final: true }, ...record, delegation, ...job.effects] }
+      : { state: job.state, effects: [delegation, ...job.effects] };
   }
 
   if (event.tag === "stopWork") {
@@ -611,11 +631,10 @@ export class Voice {
   private thinkingRestore: string | undefined;
   private conversation: Conversation | null = null;
   /**
-   * Shared-log pack for the latest voice job, added to that job's message on each
-   * model request by `onContext`. Only the latest job carries one: its pack already
-   * covers the recent thread, and repeating older packs would grow every request.
+   * Delegations sent in this process, by job id. The session copy (DELEGATION_TYPE
+   * entries) is what survives a restart; this covers a branch read that misses one.
    */
-  private handoffPack: { id: WorkId; text: string } | null = null;
+  private readonly delegations = new Map<WorkId, string>();
   private readonly finalFaceIds = new Set<string>();
   private readonly startedSpokenIds = new Set<string>();
   private readonly spokenTexts = new Map<string, string>();
@@ -698,10 +717,15 @@ export class Voice {
     }
   }
 
-  /** Pi's `context` hook: the pack reaches the model, never the chat or the session file. */
-  onContext(event: ContextEvent): ContextEventResult | undefined {
-    if (!this.handoffPack) return;
-    const messages = withVoiceContext(event.messages, this.handoffPack.id, this.handoffPack.text);
+  /**
+   * Pi's `context` hook: every voice job's message reaches the model as its
+   * `<realtime_delegation>`, while the chat keeps the brief and the job id.
+   */
+  onContext(event: ContextEvent, ctx?: ExtensionContext): ContextEventResult | undefined {
+    const branch = ctx?.sessionManager?.getBranch?.() ?? this.lastCtx?.sessionManager?.getBranch?.() ?? [];
+    const found = delegationsFromBranch(branch);
+    for (const [id, text] of this.delegations) if (!found.has(id)) found.set(id, text);
+    const messages = withDelegations(event.messages, found);
     return messages ? { messages } : undefined;
   }
 
@@ -773,10 +797,11 @@ export class Voice {
       case "injectUser":
         this.child?.ingestUser(effect.text);
         return;
+      case "saveDelegation":
+        this.delegations.set(effect.id, effect.text);
+        this.pi.appendEntry?.(DELEGATION_TYPE, { id: effect.id, text: effect.text });
+        return;
       case "sendWork": {
-        // Read the pack before the brief is recorded, so it ends with what led here.
-        const pack = this.history().handoffContext().trim();
-        this.handoffPack = pack ? { id: effect.id, text: pack } : null;
         const prompt = jobPrompt(effect.id, effect.brief);
         if (effect.deliver === "steer") this.pi.sendUserMessage(prompt, { deliverAs: "steer" });
         else this.pi.sendUserMessage(prompt);

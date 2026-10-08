@@ -2,10 +2,9 @@
 //
 // `session.json` only remembers which id a working directory opens. Resume lists every
 // thread by id. Voice turns, handoff briefs, and full Pi results are appended here.
-// A call starts from one dated pack of that log (Latest / Previous), and each
-// spawn_thinking request carries the same pack so Pi is not limited to the brief.
-// Pi gets it through the extension's `context` hook (request-only, never shown in
-// the chat); the visible Pi message is the brief and its job id.
+// A call starts from one dated pack of that log (Latest / Previous). Pi does not get
+// this pack: like Codex, each handoff carries only the voice transcript since the
+// previous one (see delegation.ts), sent through the `context` hook.
 
 import { DatabaseSync } from "node:sqlite";
 import { chmodSync, mkdirSync, readdirSync, statSync, utimesSync } from "node:fs";

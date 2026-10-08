@@ -164,41 +164,69 @@ export function lastUserText(branch: SessionEntry[]): UserText | undefined {
 
 /**
  * The visible Pi message for a voice job: the brief, then the id that links one
- * agent answer to one voice job. The shared-log pack is not part of it; see
- * `withVoiceContext`. The job id stays last so routing still matches.
+ * agent answer to one voice job. The model sees the job's Codex-style delegation
+ * instead; see `withDelegations`. The job id stays last so routing still matches.
  */
 export function jobPrompt(id: WorkId, brief: UserText): string {
-  return `${brief}\n\n[Pi voice job id: ${id}]`;
+  return `${brief}\n\n${jobMarker(id)}`;
+}
+
+function jobMarker(id: WorkId): string {
+  return `[Pi voice job id: ${id}]`;
+}
+
+/**
+ * Hidden session entry holding the delegation sent with one voice job. Pi draws a
+ * custom entry only through a registered renderer (none for this type) and never
+ * puts custom entries in model context, so it is stored but not shown.
+ */
+export const DELEGATION_TYPE = "pi-voice-delegation";
+
+export type DelegationEntry = { id: WorkId; text: string };
+
+/** Every stored delegation on this branch, by job id. */
+export function delegationsFromBranch(branch: readonly SessionEntry[]): Map<WorkId, string> {
+  const found = new Map<WorkId, string>();
+  for (const entry of branch) {
+    if (entry.type !== "custom" || (entry as { customType?: string }).customType !== DELEGATION_TYPE) continue;
+    const data = (entry as { data?: Partial<DelegationEntry> }).data;
+    if (data && typeof data.id === "string" && typeof data.text === "string" && data.text) {
+      found.set(data.id as WorkId, data.text);
+    }
+  }
+  return found;
 }
 
 /** A conversation message as Pi's `context` hook hands it over (only what is read here). */
 type ContextMessage = { role: string; content?: unknown };
 
 /**
- * Put the shared-log pack in front of the brief, for the model request only.
+ * Give the model each voice job as Codex gives its backend agent a handoff: the
+ * `<realtime_delegation>` block (brief + voice transcript since the previous
+ * handoff) in place of the visible brief, with the job id kept last.
  *
- * The pack used to be written into the Pi user message itself, so every handoff
- * left a wall of dated history in the user's Pi chat (and in the "Steering:"
- * line while Pi was busy). Pi's `context` hook runs before each model request on
- * a copy of the conversation; nothing it returns is saved or drawn. The model
- * sees exactly what it saw before (pack, brief, job id last) while the chat
- * shows the brief and the job id.
- *
- * Only the message carrying `id` is changed. Returns undefined when that message
- * is not in `messages` (compacted away, another session) or the pack is empty.
+ * Pi's `context` hook runs before each model request on a copy of the
+ * conversation; nothing it returns is saved or drawn, so the chat keeps showing
+ * the brief and the id. Every job message on the branch is rewritten, not only
+ * the latest, so earlier handoffs' transcript stays in view on later turns, as it
+ * does in Codex where the delegation is the stored user message.
+ * Returns undefined when no message changes.
  */
-export function withVoiceContext<M extends ContextMessage>(messages: readonly M[], id: WorkId, context: string): M[] | undefined {
-  const pack = context.trim();
-  if (!pack) return;
-  const at = messages.findIndex((message) => message.role === "user" && jobIdFromText(visibleText(message.content)) === id);
-  if (at < 0) return;
-  const target = messages[at];
-  const lead = { type: "text", text: `${pack}\n\n` };
-  const content = typeof target.content === "string"
-    ? [{ type: "text", text: `${pack}\n\n${target.content}` }]
-    : [lead, ...(Array.isArray(target.content) ? target.content : [])];
-  const next = messages.slice();
-  next[at] = { ...target, content } as M;
+export function withDelegations<M extends ContextMessage>(messages: readonly M[], delegations: ReadonlyMap<WorkId, string>): M[] | undefined {
+  if (delegations.size === 0) return;
+  let next: M[] | undefined;
+  messages.forEach((message, at) => {
+    if (message.role !== "user") return;
+    const id = jobIdFromText(visibleText(message.content));
+    const delegation = id ? delegations.get(id) : undefined;
+    if (!id || !delegation) return;
+    const text = { type: "text", text: `${delegation}\n\n${jobMarker(id)}` };
+    const rest = Array.isArray(message.content)
+      ? message.content.filter((part) => !(part && typeof part === "object" && (part as { type?: unknown }).type === "text"))
+      : [];
+    next ??= messages.slice();
+    next[at] = { ...message, content: [text, ...rest] } as M;
+  });
   return next;
 }
 

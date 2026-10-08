@@ -514,7 +514,7 @@ describe("work", () => {
     assert.equal(next.state.job.brief, "Tesla stock price");
     assert.equal(next.state.job.bound, false);
     assert.equal(next.state.job.afterEntryId, "leaf0");
-    assert.deepEqual(tags(next.effects), ["sendWork", "recordTurn", "paint"]);
+    assert.deepEqual(tags(next.effects), ["saveDelegation", "sendWork", "recordTurn", "paint"]);
     const recorded = next.effects.find((effect) => effect.tag === "recordTurn");
     assert.equal(recorded && recorded.tag === "recordTurn" ? recorded.turnKind : undefined, "work");
     assert.match(recorded && recorded.tag === "recordTurn" ? recorded.turn.text : "", /^\[Pi handoff\] Tesla stock price$/);
@@ -968,7 +968,7 @@ describe("onBeforeAgentStart", () => {
     assert.match(WORK_SECTION, /Accessibility permission/);
     assert.match(WORK_SECTION, /Voice cannot click/);
     assert.doesNotMatch(WORK_SECTION, /screenshot/);
-    assert.match(WORK_SECTION, /dated background block may precede the task/);
+    assert.match(WORK_SECTION, /<realtime_delegation>: <input> is the task, and <transcript_delta> is the voice conversation since the previous handoff/);
   });
 });
 
@@ -1009,28 +1009,52 @@ describe("job identity", () => {
     assert.deepEqual(sent, [jobPrompt(asWork("w1"), asUser("check the news"))]);
   });
 
-  it("shows only the brief and id in Pi's chat and sends the full pack to the model", () => {
+  it("shows only the brief and id in Pi's chat and gives the model each job's delegation", () => {
     const sent: string[] = [];
-    const pack = `[Background context from the shared conversation.]\n\nLatest:\n2026-10-08T18:00:00.000Z User: check the news\n\nPrevious:\n${"older turn\n".repeat(500).trim()}`;
-    const voice = Voice.attach({ sendUserMessage: (text: string) => sent.push(text) } as never);
-    (voice as unknown as { state: VoiceState }).state = on();
-    (voice as unknown as { conversation: unknown }).conversation = { handoffContext: () => pack, record: () => {}, close: () => {} };
-    voice.feed({ tag: "work", id: asWork("w1"), brief: asUser("check the news") }, {
+    const entries: { type: "custom"; customType: string; data: unknown }[] = [];
+    const pi = {
+      sendUserMessage: (text: string) => sent.push(text),
+      appendEntry: (customType: string, data: unknown) => entries.push({ type: "custom", customType, data }),
+    };
+    const ctx = {
       isIdle: () => true,
-      sessionManager: { getBranch: () => [], getLeafId: () => null },
+      sessionManager: { getBranch: () => entries, getLeafId: () => null },
       ui: { setWidget: () => {} },
-    } as never);
+    } as never;
+    const voice = Voice.attach(pi as never);
+    (voice as unknown as { state: VoiceState }).state = on();
+    voice.feed({ tag: "heard", text: asUser("what's in the news"), itemId: "h1" }, ctx);
+    voice.feed({ tag: "spoken", text: "I'll have Pi check.", itemId: "s1" }, ctx);
+    voice.feed({ tag: "work", id: asWork("w1"), brief: asUser("check the news") }, ctx);
     // The visible Pi user message is the brief plus the job id, nothing else.
     assert.deepEqual(sent, ["check the news\n\n[Pi voice job id: w1]"]);
-    const request = voice.onContext({
-      type: "context",
-      messages: [{ role: "user", content: [{ type: "text", text: sent[0] }], timestamp: 1 }],
-    } as never);
-    const text = (request?.messages?.[0] as { content: { text: string }[] }).content.map((part) => part.text).join("");
-    assert.equal(text, `${pack}\n\n${sent[0]}`);
-    assert.equal(jobIdFromText(text), asWork("w1"));
+    const first = "<realtime_delegation>\n  <input>check the news</input>\n  <transcript_delta>user: what's in the news\nassistant: I'll have Pi check.\nuser: check the news</transcript_delta>\n</realtime_delegation>";
+    assert.deepEqual(entries.map((entry) => entry.customType).filter((type) => type === "pi-voice-delegation").length, 1);
+
+    const request = (messages: unknown[]) => voice.onContext({ type: "context", messages } as never, ctx);
+    const text = (message: unknown) => (message as { content: { text: string }[] }).content.map((part) => part.text).join("");
+    const out = request([{ role: "user", content: [{ type: "text", text: sent[0] }], timestamp: 1 }]);
+    assert.equal(text(out!.messages![0]), `${first}\n\n${"[Pi voice job id: w1]"}`);
+
+    // Next handoff: only what was said since w1, and w1 keeps its own delegation.
+    (voice as unknown as { state: VoiceState }).state = { ...(voice as unknown as { state: VoiceState }).state, job: { tag: "none" } } as VoiceState;
+    voice.feed({ tag: "heard", text: asUser("and the weather"), itemId: "h2" }, ctx);
+    voice.feed({ tag: "work", id: asWork("w2"), brief: asUser("check the weather") }, ctx);
+    const later = request([
+      { role: "user", content: [{ type: "text", text: sent[0] }], timestamp: 1 },
+      { role: "assistant", content: [{ type: "text", text: "Headlines…" }], timestamp: 2 },
+      { role: "user", content: [{ type: "text", text: sent[1] }], timestamp: 3 },
+    ]);
+    assert.equal(text(later!.messages![0]), `${first}\n\n[Pi voice job id: w1]`);
+    assert.equal(text(later!.messages![2]),
+      "<realtime_delegation>\n  <input>check the weather</input>\n  <transcript_delta>user: and the weather\nuser: check the weather</transcript_delta>\n</realtime_delegation>\n\n[Pi voice job id: w2]");
+
+    // After a Pi restart the session entries alone are enough.
+    const restarted = Voice.attach(pi as never);
+    const again = restarted.onContext({ type: "context", messages: [{ role: "user", content: sent[0], timestamp: 1 }] } as never, ctx);
+    assert.equal(text(again!.messages![0]), `${first}\n\n[Pi voice job id: w1]`);
     // Without a voice job message in the request, nothing changes.
-    assert.equal(voice.onContext({ type: "context", messages: [{ role: "user", content: "typed", timestamp: 1 }] } as never), undefined);
+    assert.equal(voice.onContext({ type: "context", messages: [{ role: "user", content: "typed", timestamp: 1 }] } as never, ctx), undefined);
   });
 
   it("matches the exact dispatch even when two jobs have the same brief", () => {
@@ -1210,5 +1234,51 @@ describe("stopWork", () => {
 
   it("the wire carries the stop signal", () => {
     assert.deepEqual(parseLine('{"type":"stop_work"}'), { tag: "stopWork" });
+  });
+});
+
+describe("handoff transcript (Codex active transcript)", () => {
+  const delegationOf = (effects: readonly Effect[]) =>
+    (effects.find((effect) => effect.tag === "saveDelegation") as { text: string } | undefined)?.text;
+  const live = (state: VoiceState) => state as Extract<VoiceState, { tag: "on" }>;
+
+  it("carries only voice since the last handoff and resets on each handoff", () => {
+    let state = on();
+    const go = (event: Parameters<typeof step>[1]) => {
+      const next = step(state, event, world({ now: 1 }));
+      state = next.state;
+      return next.effects;
+    };
+    go({ tag: "heard", text: asUser("find fli"), itemId: "h1" });
+    go({ tag: "heard", text: asUser("find flights"), itemId: "h1" });
+    go({ tag: "spokenDelta", text: "Which ", itemId: "s1" });
+    go({ tag: "spoken", text: "Which dates?", itemId: "s1" });
+    go({ tag: "composerInput", text: asUser("typed aside") });
+    go({ tag: "heard", text: asUser("next friday"), itemId: "h2" });
+    const first = delegationOf(go({ tag: "work", id: asWork("w1"), brief: asUser("find flights for next friday") }));
+    assert.equal(first,
+      "<realtime_delegation>\n  <input>find flights for next friday</input>\n  <transcript_delta>user: find flights\nassistant: Which dates?\nuser: next friday\nuser: find flights for next friday</transcript_delta>\n</realtime_delegation>");
+    // Typed text is not a transcript in Codex either.
+    assert.doesNotMatch(first!, /typed aside/);
+    assert.deepEqual(live(state).transcript, []);
+    // Job progress and status items reach the voice model, not the transcript.
+    go({ tag: "jobProgress", note: "[STATUS] searching flights" });
+    go({ tag: "spoken", text: "Still looking.", itemId: "s2" });
+    const second = delegationOf(go({ tag: "work", id: asWork("w2"), brief: asUser("also hotels") }));
+    assert.equal(second,
+      "<realtime_delegation>\n  <input>also hotels</input>\n  <transcript_delta>assistant: Still looking.\nuser: also hotels</transcript_delta>\n</realtime_delegation>");
+    assert.doesNotMatch(second!, /find flights|STATUS/);
+  });
+
+  it("keeps the delta when a muted dispatch is dropped", () => {
+    const state = on({ mic: { tag: "closed" }, transcript: [{ role: "user", text: "hello" }] });
+    const next = step(state, { tag: "work", id: asWork("w1"), brief: asUser("x") }, world());
+    assert.equal(delegationOf(next.effects), undefined);
+    assert.deepEqual(live(next.state).transcript, [{ role: "user", text: "hello" }]);
+  });
+
+  it("starts empty when voice comes up", () => {
+    const next = step(connecting(), { tag: "ready" }, world({ pid: pid(1) }));
+    assert.equal(live(next.state).transcript, undefined);
   });
 });

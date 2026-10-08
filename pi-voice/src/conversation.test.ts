@@ -31,11 +31,11 @@ it("imports once, starts genuinely fresh, resumes the displayed selection, and s
     assert.deepEqual(conversation.replay(legacy), []);
     conversation.record({ role: "user", text: "new question" }, "voice");
     conversation.record({ role: "assistant", text: "new answer" }, "voice");
-    const context = conversation.handoffContext();
-    assert.match(context, /new question/);
-    assert.match(context, /new answer/);
-    assert.match(context, /Latest/);
-    assert.doesNotMatch(context, /old question/);
+    const context = conversation.replay([]);
+    assert.match(context[0].text, /new question/);
+    assert.match(context[0].text, /new answer/);
+    assert.match(context[0].text, /Latest/);
+    assert.doesNotMatch(context[0].text, /old question/);
     // Changing recency after displaying a list must not change what number 1 means.
     assert.equal(conversation.resume("1"), null);
     const resumed = conversation.replay([]);
