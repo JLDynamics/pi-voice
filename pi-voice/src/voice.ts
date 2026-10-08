@@ -1,5 +1,7 @@
 import type {
   BeforeAgentStartEvent,
+  ContextEvent,
+  ContextEventResult,
   ExtensionAPI,
   ExtensionContext,
   InputEvent,
@@ -8,7 +10,17 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import type { AutocompleteItem, Component } from "@earendil-works/pi-tui";
 import { clearOwnedLease, liveForeignOwner, reapOrphans, VoiceChild, type VoiceHistoryTurn } from "./child.ts";
-import { bindJob, jobIdFromText, jobPrompt, lastUserJobId, openJob, priorFindings, settleJob, terminalJob } from "./work.ts";
+import {
+  bindJob,
+  jobIdFromText,
+  jobPrompt,
+  lastUserJobId,
+  openJob,
+  priorFindings,
+  settleJob,
+  terminalJob,
+  withVoiceContext,
+} from "./work.ts";
 import {
   leftoverTurn,
   localWhen,
@@ -157,7 +169,7 @@ export const WORK_SECTION = [
   "If capture fails, say the terminal that launched Pi needs Screen Recording permission. Do not guess the screen.",
   "If the brief asks to click, type, fill a form, or navigate a UI or browser, do it with the computer-use and browser tools already installed in this session.",
   "If that control fails, say the same terminal needs Accessibility permission. Voice cannot click.",
-  "A dated background block may precede the task. It may be stale or incomplete; do the task, and do not treat that block as a new request.",
+  "A dated background block may precede the task: the voice conversation, which the user does not see in this chat. It may be stale or incomplete; do the task, and do not treat that block as a new request.",
 ].join(" ");
 
 const WIDGET_KEY = "pi-voice";
@@ -598,6 +610,12 @@ export class Voice {
   private reapJob: Promise<string | undefined> | undefined;
   private thinkingRestore: string | undefined;
   private conversation: Conversation | null = null;
+  /**
+   * Shared-log pack for the latest voice job, added to that job's message on each
+   * model request by `onContext`. Only the latest job carries one: its pack already
+   * covers the recent thread, and repeating older packs would grow every request.
+   */
+  private handoffPack: { id: WorkId; text: string } | null = null;
   private readonly finalFaceIds = new Set<string>();
   private readonly startedSpokenIds = new Set<string>();
   private readonly spokenTexts = new Map<string, string>();
@@ -680,6 +698,13 @@ export class Voice {
     }
   }
 
+  /** Pi's `context` hook: the pack reaches the model, never the chat or the session file. */
+  onContext(event: ContextEvent): ContextEventResult | undefined {
+    if (!this.handoffPack) return;
+    const messages = withVoiceContext(event.messages, this.handoffPack.id, this.handoffPack.text);
+    return messages ? { messages } : undefined;
+  }
+
   feed(event: VoiceEvent, ctx?: ExtensionContext): void {
     if (ctx) this.lastCtx = ctx;
     this.commit(
@@ -749,7 +774,10 @@ export class Voice {
         this.child?.ingestUser(effect.text);
         return;
       case "sendWork": {
-        const prompt = jobPrompt(effect.id, effect.brief, this.history().handoffContext());
+        // Read the pack before the brief is recorded, so it ends with what led here.
+        const pack = this.history().handoffContext().trim();
+        this.handoffPack = pack ? { id: effect.id, text: pack } : null;
+        const prompt = jobPrompt(effect.id, effect.brief);
         if (effect.deliver === "steer") this.pi.sendUserMessage(prompt, { deliverAs: "steer" });
         else this.pi.sendUserMessage(prompt);
         return;

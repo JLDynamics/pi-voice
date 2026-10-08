@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
+  handoffHistoryTurn,
   HistoryStore,
   isDelegationChatter,
   leftoverTurn,
+  speaker,
   startupPack,
   withoutBrief,
   WORK_RESULT_CHARS,
@@ -121,6 +123,20 @@ describe("startupPack", () => {
     assert.match(text, /Previous:\n2026-10-08T16:59:00.000Z User: check the logs/);
     assert.match(text, /2026-10-08T17:00:00.000Z Pi: \[Pi result "check logs"\] found one error/);
     assert.doesNotMatch(text, /I'll have Pi/);
+  });
+
+  it("labels a [Pi handoff] row as Agent's brief, not as Pi", () => {
+    const pack = startupPack([
+      row("assistant", "work", '[Pi result "AI news"] three headlines', "2026-10-08T18:02:00.000Z"),
+      row("assistant", "work", "[Pi handoff] Search the latest AI news", "2026-10-08T18:00:30.000Z"),
+      row("user", "voice", "search the latest AI news", "2026-10-08T18:00:00.000Z"),
+    ], 100_000);
+    const text = pack[0].text;
+    assert.match(text, /2026-10-08T18:00:30.000Z Agent: \[Pi handoff\] Search the latest AI news/);
+    assert.doesNotMatch(text, /Pi: \[Pi handoff\]/);
+    assert.match(text, /2026-10-08T18:02:00.000Z Pi: \[Pi result "AI news"\] three headlines/);
+    assert.equal(speaker({ role: "assistant", kind: "work", text: handoffHistoryTurn("x").text }), "Agent");
+    assert.equal(speaker({ role: "assistant", kind: "work", text: workHistoryTurn("x", "y").text }), "Pi");
   });
 
   it("omits an empty Previous section and an empty log", () => {

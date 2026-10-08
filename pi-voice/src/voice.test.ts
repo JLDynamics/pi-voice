@@ -28,7 +28,7 @@ import {
   type VoiceState,
 } from "./voice.ts";
 import { fullResult, lastAssistantText, openJob, settleJob } from "./work.ts";
-import { answerForJob, jobPrompt, lastUserJobId, toolProgress, webSourceCount } from "./work.ts";
+import { answerForJob, jobIdFromText, jobPrompt, lastUserJobId, toolProgress, webSourceCount } from "./work.ts";
 
 function pid(n: number): ChildPid {
   return n as ChildPid;
@@ -1007,6 +1007,30 @@ describe("job identity", () => {
       ui: { setWidget: () => {} },
     } as never);
     assert.deepEqual(sent, [jobPrompt(asWork("w1"), asUser("check the news"))]);
+  });
+
+  it("shows only the brief and id in Pi's chat and sends the full pack to the model", () => {
+    const sent: string[] = [];
+    const pack = `[Background context from the shared conversation.]\n\nLatest:\n2026-10-08T18:00:00.000Z User: check the news\n\nPrevious:\n${"older turn\n".repeat(500).trim()}`;
+    const voice = Voice.attach({ sendUserMessage: (text: string) => sent.push(text) } as never);
+    (voice as unknown as { state: VoiceState }).state = on();
+    (voice as unknown as { conversation: unknown }).conversation = { handoffContext: () => pack, record: () => {}, close: () => {} };
+    voice.feed({ tag: "work", id: asWork("w1"), brief: asUser("check the news") }, {
+      isIdle: () => true,
+      sessionManager: { getBranch: () => [], getLeafId: () => null },
+      ui: { setWidget: () => {} },
+    } as never);
+    // The visible Pi user message is the brief plus the job id, nothing else.
+    assert.deepEqual(sent, ["check the news\n\n[Pi voice job id: w1]"]);
+    const request = voice.onContext({
+      type: "context",
+      messages: [{ role: "user", content: [{ type: "text", text: sent[0] }], timestamp: 1 }],
+    } as never);
+    const text = (request?.messages?.[0] as { content: { text: string }[] }).content.map((part) => part.text).join("");
+    assert.equal(text, `${pack}\n\n${sent[0]}`);
+    assert.equal(jobIdFromText(text), asWork("w1"));
+    // Without a voice job message in the request, nothing changes.
+    assert.equal(voice.onContext({ type: "context", messages: [{ role: "user", content: "typed", timestamp: 1 }] } as never), undefined);
   });
 
   it("matches the exact dispatch even when two jobs have the same brief", () => {

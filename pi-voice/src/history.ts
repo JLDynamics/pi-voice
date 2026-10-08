@@ -3,8 +3,9 @@
 // `session.json` only remembers which id a working directory opens. Resume lists every
 // thread by id. Voice turns, handoff briefs, and full Pi results are appended here.
 // A call starts from one dated pack of that log (Latest / Previous), and each
-// spawn_thinking message carries the same pack so Pi is not limited to the brief.
-// Pi's own session cannot take a silent append, so this file is the durable thread.
+// spawn_thinking request carries the same pack so Pi is not limited to the brief.
+// Pi gets it through the extension's `context` hook (request-only, never shown in
+// the chat); the visible Pi message is the brief and its job id.
 
 import { DatabaseSync } from "node:sqlite";
 import { chmodSync, mkdirSync, readdirSync, statSync, utimesSync } from "node:fs";
@@ -144,10 +145,12 @@ export function withoutBrief(text: string): string {
   return end < 0 ? text : `[Earlier, Pi finished a job] ${text.slice(end + 3)}`;
 }
 
+const HANDOFF_PREFIX = "[Pi handoff]";
+
 /** The task as handed to Pi, saved when it is sent so a restart still shows the work. */
 export function handoffHistoryTurn(brief: string): VoiceHistoryTurn {
   const ask = brief.replace(/\s+/g, " ").trim().slice(0, 2_000);
-  return { role: "assistant", text: `[Pi handoff] ${ask}` };
+  return { role: "assistant", text: `${HANDOFF_PREFIX} ${ask}` };
 }
 
 /** One saved job line: the brief and Pi's answer, whitespace kept, across restarts. */
@@ -175,9 +178,10 @@ function rfc3339(iso: string): string {
   return date.toISOString();
 }
 
-function speaker(row: DatedTurn): string {
+/** `[Pi handoff]` rows are Agent's brief to Pi, so only Pi's own results are labelled Pi. */
+export function speaker(row: Pick<DatedTurn, "role" | "kind" | "text">): "User" | "Agent" | "Pi" {
   if (row.role === "user") return "User";
-  if (row.kind === "work") return "Pi";
+  if (row.kind === "work" && !row.text.trimStart().startsWith(HANDOFF_PREFIX)) return "Pi";
   return "Agent";
 }
 

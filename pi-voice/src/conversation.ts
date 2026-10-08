@@ -51,7 +51,11 @@ export class Conversation {
     catch (error) { this.notice(`Voice history is not being saved: ${String(error)}`); }
   }
 
-  /** Dated slice of the shared log for the next Pi handoff. Empty if the log is closed. */
+  /**
+   * Dated slice of the shared log for the next Pi handoff: the same full pack a call
+   * starts from. Empty if the log is closed. The extension hands it to the model
+   * through Pi's `context` hook, so it is not shown in Pi's chat.
+   */
   handoffContext(): string {
     try {
       return this.store?.loadReplay()[0]?.text ?? "";

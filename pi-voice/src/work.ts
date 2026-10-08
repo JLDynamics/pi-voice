@@ -163,13 +163,43 @@ export function lastUserText(branch: SessionEntry[]): UserText | undefined {
 }
 
 /**
- * An id on the delivered Pi message links one agent answer to one voice job.
- * Optional context is the shared-log pack. The job id stays last so routing still matches.
+ * The visible Pi message for a voice job: the brief, then the id that links one
+ * agent answer to one voice job. The shared-log pack is not part of it; see
+ * `withVoiceContext`. The job id stays last so routing still matches.
  */
-export function jobPrompt(id: WorkId, brief: UserText, context = ""): string {
-  const background = context.trim();
-  const task = background ? `${background}\n\n${brief}` : brief;
-  return `${task}\n\n[Pi voice job id: ${id}]`;
+export function jobPrompt(id: WorkId, brief: UserText): string {
+  return `${brief}\n\n[Pi voice job id: ${id}]`;
+}
+
+/** A conversation message as Pi's `context` hook hands it over (only what is read here). */
+type ContextMessage = { role: string; content?: unknown };
+
+/**
+ * Put the shared-log pack in front of the brief, for the model request only.
+ *
+ * The pack used to be written into the Pi user message itself, so every handoff
+ * left a wall of dated history in the user's Pi chat (and in the "Steering:"
+ * line while Pi was busy). Pi's `context` hook runs before each model request on
+ * a copy of the conversation; nothing it returns is saved or drawn. The model
+ * sees exactly what it saw before (pack, brief, job id last) while the chat
+ * shows the brief and the job id.
+ *
+ * Only the message carrying `id` is changed. Returns undefined when that message
+ * is not in `messages` (compacted away, another session) or the pack is empty.
+ */
+export function withVoiceContext<M extends ContextMessage>(messages: readonly M[], id: WorkId, context: string): M[] | undefined {
+  const pack = context.trim();
+  if (!pack) return;
+  const at = messages.findIndex((message) => message.role === "user" && jobIdFromText(visibleText(message.content)) === id);
+  if (at < 0) return;
+  const target = messages[at];
+  const lead = { type: "text", text: `${pack}\n\n` };
+  const content = typeof target.content === "string"
+    ? [{ type: "text", text: `${pack}\n\n${target.content}` }]
+    : [lead, ...(Array.isArray(target.content) ? target.content : [])];
+  const next = messages.slice();
+  next[at] = { ...target, content } as M;
+  return next;
 }
 
 export function lastUserJobId(branch: SessionEntry[]): WorkId | undefined {
