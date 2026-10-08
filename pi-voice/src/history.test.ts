@@ -86,6 +86,10 @@ describe("isDelegationChatter", () => {
       true,
     );
     assert.equal(
+      isDelegationChatter({ role: "assistant", kind: "voice", text: "Let me look that up" }),
+      true,
+    );
+    assert.equal(
       isDelegationChatter({ role: "assistant", kind: "voice", text: "the answer is 42" }),
       false,
     );

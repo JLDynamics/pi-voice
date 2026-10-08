@@ -36,7 +36,7 @@ export function openJob(state: VoiceState, id: WorkId, brief: UserText, world: S
   if (state.tag !== "on" || state.mic.tag !== "open") return keep(state);
   const effects: Effect[] = [];
   // New routing id, same live Pi operation: steer without aborting its context.
-  // Explicit stop_pi still owns cancellation.
+  // Explicit stop_thinking still owns cancellation.
   if (state.job.tag === "running") {
     effects.push({ tag: "sendJobUpdate", id: state.job.id, status: "superseded", note: "Task updated; Pi continues" });
   }
@@ -79,8 +79,8 @@ export function settleJob(state: VoiceState, world: StepWorld): Step {
   const next: VoiceState = { ...state, job: { tag: "none" } };
   if (!speak) {
     // Pi settled with nothing to say (every turn errored, or an empty
-    // answer). Report it as failed — not done — so `pi_status` can tell Luna
-    // the job died instead of showing a bare idle.
+    // answer). Report it as failed — not done — so the status channel can tell
+    // Agent the job died instead of going quiet.
     const failed: Effect = {
       tag: "sendJobUpdate",
       id: state.job.id,
@@ -111,9 +111,10 @@ export function settleJob(state: VoiceState, world: StepWorld): Step {
  * often sits in sentence four, and code fences were deleted outright, so the
  * one value being asked about could vanish before anyone read it.
  *
- * Pi's full answer is carried separately and remains available to Luna in
- * pages through pi_results. Pi is prompted to lead with the outcome, so this
- * excerpt can be spoken promptly without filling the voice context.
+ * Pi's full answer is carried separately and cached in Voice.app. The voice
+ * model hears this leading excerpt on the [FINAL] channel. Pi is prompted to
+ * lead with the outcome, so the excerpt can be spoken without filling the
+ * voice context. More detail is another spawn_thinking, not a paging tool.
  */
 export function fullResult(assistantText: string): ShortResult | undefined {
   const text = assistantText.trim();

@@ -1,11 +1,11 @@
 import Foundation
 
-/// Luna-side mirror of Pi's job lifecycle.
+/// Agent-side mirror of Pi's job lifecycle.
 ///
-/// Luna's tools run in Voice.app while the truth (bound, idle, branch) lives
-/// in the Pi extension. The extension pushes `job_update` lines over stdio as
-/// phases change; this tracker folds them into queryable state so `pi_status`
-/// and `pi_results` answer locally with no round trip.
+/// The voice model does not poll this. `spawn_thinking` queues or redirects
+/// work; the extension pushes `job_update` lines as phases change; `[STATUS]`
+/// and `[FINAL]` channels are what Agent speaks. The payloads below stay so
+/// tests can prove a result does not rewrite a stopped or failed job.
 ///
 /// Pure value semantics and injected `now` throughout so RuntimeTests can
 /// cover it without a backend.
@@ -46,13 +46,37 @@ struct PiJobTracker {
         (changed && elapsed >= 8) || elapsed >= 20
     }
 
+    /// Progress channel. Spoken once per meaningful change, not on a poll.
+    static func statusChannel(note: String) -> String {
+        let body = note.trimmingCharacters(in: .whitespacesAndNewlines)
+        let status = body.isEmpty ? "Pi is still working" : body
+        return "[STATUS] \(status). One short spoken progress update; this is not a new user request."
+    }
+
+    /// Failure is a status update of its own. `dropped` stays silent: mute
+    /// discarded the handoff before Pi saw it.
+    static func failureChannel(reason: String) -> String {
+        let body = reason.trimmingCharacters(in: .whitespacesAndNewlines)
+        let why = body.isEmpty ? "Pi could not complete the task" : body
+        return "[STATUS] The task failed: \(why). Explain briefly what remains unresolved. This is not the user."
+    }
+
+    /// Final channel. A stopped, superseded, or failed job stays partial even
+    /// when some findings arrived with it.
+    static func finalChannel(excerpt: String, outcome: State?) -> String {
+        let trimmed = excerpt.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let outcome, outcome == .stopped || outcome == .superseded || outcome == .failed {
+            return "[FINAL] Partial findings from an incomplete task (\(outcome.rawValue)). Say what was found and what remains unresolved. This is not the user: \(trimmed)"
+        }
+        return "[FINAL] Pi finished. Relay the outcome in one or two sentences. This is not the user: \(trimmed)"
+    }
+
     private(set) var jobs: [String: Job] = [:]
     private(set) var order: [String] = []
     private(set) var activeId: String?
     private(set) var results: [StoredResult] = []
-    /// Latest job to reach a terminal state. Reported by `pi_status` when
-    /// there is nothing active and no finished result — the difference
-    /// between "Pi failed" and "nothing ever started".
+    /// Latest job to reach a terminal state. Distinguishes "Pi failed" from
+    /// "nothing ever started" for tests and the journal.
     private(set) var lastTerminal: Job?
 
     var hasActive: Bool {
@@ -60,10 +84,10 @@ struct PiJobTracker {
         return job.state == .queued || job.state == .working
     }
 
-    /// Record a fresh `ask_pi`. Never supersedes locally: the extension owns
-    /// that decision (it can drop the new work, e.g. while muted) and reports
-    /// it back via `job_update`. Superseding here would strand a phantom job
-    /// whenever the drop path runs.
+    /// Record a fresh `spawn_thinking`. Never supersedes locally: the extension
+    /// owns that decision (it can drop the new work, e.g. while muted) and
+    /// reports it back via `job_update`. Superseding here would strand a
+    /// phantom job whenever the drop path runs.
     mutating func ask(id: String, brief: String, now: Date = Date()) {
         jobs[id] = Job(id: id, brief: brief, state: .queued, startedAt: now, updatedAt: now, lastNote: nil)
         order.append(id)
@@ -97,8 +121,9 @@ struct PiJobTracker {
         }
     }
 
-    /// Cache a finished result for `pi_results` re-reads. Unknown ids (an older
-    /// bridge) still store under their id with an empty brief.
+    /// Cache a finished result. Unknown ids (an older bridge) still store under
+    /// their id with an empty brief. The voice model hears the `[FINAL]`
+    /// excerpt; this cache is what keeps a partial outcome from becoming done.
     mutating func finish(id: String, brief: String? = nil, text: String, now: Date = Date()) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
@@ -125,7 +150,7 @@ struct PiJobTracker {
         if activeId == id { activeId = nil }
     }
 
-    /// Payload for `pi_status`: what Pi is doing now, or the last finished job.
+    /// What Pi is doing now, or the last finished job. Not a model tool.
     func statusPayload(now: Date = Date()) -> [String: Any] {
         if let id = activeId, let job = jobs[id],
            job.state == .queued || job.state == .working {
@@ -166,8 +191,8 @@ struct PiJobTracker {
         return ["status": "idle"]
     }
 
-    /// Paged payload for `pi_results`. Defaults to the most recent result;
-    /// unknown ids answer with the ids Luna can actually ask for.
+    /// Paged read of a cached result, for tests. Defaults to the most recent
+    /// result; unknown ids answer with the ids that were stored.
     func resultsPayload(id: String?, cursor: Int, limit: Int) -> [String: Any] {
         let target = id?.trimmingCharacters(in: .whitespacesAndNewlines)
         let stored: StoredResult?
@@ -233,7 +258,7 @@ struct PiJobTracker {
 
     /// Append one JSON line, trimming the file back to half once it passes
     /// maxBytes. A diagnostic log ("what did Pi say earlier?"), not the
-    /// re-read path — `pi_results` serves from memory.
+    /// re-read path — finished text is served from memory.
     static func appendJournal(directory: URL, line: String, maxBytes: Int = 262_144) {
         guard !line.isEmpty else { return }
         let url = directory.appendingPathComponent(journalFileName)

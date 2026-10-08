@@ -6,7 +6,7 @@ A Mac-first live voice assistant that runs its ears and voice locally, while a R
 
 Voice.app has no window. It runs as a background audio bridge and talks to Pi over stdio; the SwiftUI panel was removed once Pi became the only way in.
 
-It keeps realtime WebSocket turn-taking and interruption/cancellation. Under Pi, Luna has no bash; research, memory and web reading go to Pi via `ask_pi`.
+It keeps realtime WebSocket turn-taking and interruption/cancellation. Under Pi, Agent has no bash; research, memory, and web reading go to Pi via `spawn_thinking`.
 
 Audio modes are set via the `voice.audioMode` UserDefaults key (default `automatic`, configured via `defaults write dev.jldynamics.Voice voice.audioMode <mode>`). In `automatic` mode, Apple's voice processing handles echo cancellation, with Silero VAD detecting interruptions. The first assistant reply suppresses mic capture while playing and for a short tail because an echoed greeting can otherwise become the user's next turn; later replies allow interruptions. If voice processing cannot start, the app falls back to compatibility mode, which suppresses microphone capture during playback. `headphones` mode keeps capture open without echo cancellation.
 
@@ -77,7 +77,9 @@ The voice transcript keeps one visible entry per user utterance and one per Luna
 
 Pi's normal terminal settings apply. Pi 0.87.1's bundled renderer needs the scoped repair in `scripts/patch-pi-native-fold.mjs` for per-entry folding during voice; the script verifies the exact bundle, saves a backup, and supports `--restore`. An existing Pi process must be restarted after applying it.
 
-Under Pi, Voice.app publishes `ask_pi`, `stop_pi`, `pi_status`, and `pi_results` to the model. Luna has no bash tool in that configuration; research, memory, and web reading are delegated to Pi via `ask_pi`. `pi_status` reports the mirrored job phase (`PiJobTracker`, fed by extension `job_update` lines) and `pi_results` re-reads cached finished work in pages.
+Under Pi, Voice.app publishes two tools: `spawn_thinking` and `stop_thinking`. Agent has no bash tool in that configuration. Casual chat stays with Agent. Files, the shell, research, PDFs, and code changes go to the open Pi session through `spawn_thinking`. A second call while Pi is busy redirects that task; the latest brief wins. Progress is pushed as a `[STATUS]` message and the answer as `[FINAL]`; Agent speaks those and does not poll. `stop_thinking` cancels the current job and leaves the call up. `/voice stop` ends the call.
+
+To try this branch: check it out, build Voice (`bash macos/Voice/scripts/build.sh`), start Pi from this worktree with `pi-voice/` loaded, and run `/voice`. Say something you can answer from the conversation (Agent should answer), then ask it to read a file or look something up (it should call `spawn_thinking` and stay mostly quiet until a status or final update). Say "stop" to cancel the job without ending voice, or `/voice stop` to hang up. A muted mic drops a new handoff (`dropped`) and does not start Pi.
 
 The server-side `bash` research tool still exists for clients that publish it (e.g. `scripts/verify-voice.py --research`) and runs under a macOS `sandbox-exec` profile: file writes only in temp dirs and no connections to this Mac (localhost). Literal private-network URLs are refused, but a `curl -L` redirect to one is not. No client-side tools remain.
 

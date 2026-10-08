@@ -99,8 +99,8 @@ final class SessionController {
     var onSpokenDelta: ((String) -> Void)?
     var onAgentDone: (() -> Void)?
     var onSpoken: ((String) -> Void)?
-    var onAskPi: ((String, String) -> Void)?
-    var onStopPi: (() -> Void)?
+    var onSpawnThinking: ((String, String) -> Void)?
+    var onStopThinking: (() -> Void)?
 
     private var pendingUserText: String?
     private var pendingUserItemId: String?
@@ -216,11 +216,11 @@ final class SessionController {
             headless.onSpoken = { [weak self] text in
                 self?.onSpoken?(text)
             }
-            headless.onAskPi = { [weak self] id, brief in
-                self?.onAskPi?(id, brief)
+            headless.onSpawnThinking = { [weak self] id, brief in
+                self?.onSpawnThinking?(id, brief)
             }
-            headless.onStopPi = { [weak self] in
-                self?.onStopPi?()
+            headless.onStopThinking = { [weak self] in
+                self?.onStopThinking?()
             }
         }
     }

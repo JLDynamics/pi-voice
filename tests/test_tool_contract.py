@@ -59,6 +59,19 @@ def test_client_dispatch_covers_the_client_tools_and_nothing_else():
     assert _dispatched_tool_names(tools) == CLIENT_TOOL_NAMES
 
 
+def test_headless_voice_publishes_only_the_handoff():
+    """Pi voice is one handoff plus a spoken cancel. The old poll tools are gone."""
+    source = (SESSION_SOURCES / "LiveVoiceBackend.swift").read_text()
+    tools = source.split("func headlessTalkerTools()", 1)[1].split("private static func json(", 1)[0]
+    published = set(re.findall(r'"name": "([a-z_]+)"', tools))
+    assert published == {"spawn_thinking", "stop_thinking"}
+    dispatch = source.split("private func executeTool(", 1)[1].split("private func sendToolOutput(", 1)[0]
+    assert set(re.findall(r'if name == "([a-z_]+)"', dispatch)) == published
+    for retired in ("ask_pi", "stop_pi", "pi_status", "pi_results"):
+        assert f'"name": "{retired}"' not in source
+    assert '"name": "bash"' not in tools
+
+
 def test_every_tool_has_a_progress_label():
     """The panel shows a label for tool calls from either side while they run."""
     session = (SESSION_SOURCES / "VoiceSession.swift").read_text()

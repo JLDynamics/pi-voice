@@ -857,7 +857,7 @@ describe("jobMessage", () => {
 });
 
 describe("jobProgress", () => {
-  it("records Pi tool activity and mirrors it for pi_status", () => {
+  it("records Pi tool activity and mirrors it for the status channel", () => {
     const opened = step(
       on(),
       { tag: "work", id: asWork("w1"), brief: asUser("Tesla") },

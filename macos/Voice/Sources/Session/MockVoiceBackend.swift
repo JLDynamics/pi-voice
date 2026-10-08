@@ -15,8 +15,8 @@ final class MockVoiceBackend: VoiceBackend, HeadlessBackend {
     var onToolDone: ((String, String) -> Void)?
     var onToolsCancelled: (() -> Void)?
     var onSpoken: ((String) -> Void)?
-    var onAskPi: ((String, String) -> Void)?
-    var onStopPi: (() -> Void)?
+    var onSpawnThinking: ((String, String) -> Void)?
+    var onStopThinking: (() -> Void)?
     var interruptCount = 0
     var ingestedUserText: [String] = []
     var postedResults: [(id: String, speak: String, full: String)] = []

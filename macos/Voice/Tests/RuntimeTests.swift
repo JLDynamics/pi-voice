@@ -102,6 +102,15 @@ struct RuntimeTests {
         assert(PiJobTracker.shouldSpeakProgress(elapsed: 8, changed: true))
         assert(!PiJobTracker.shouldSpeakProgress(elapsed: 19, changed: false))
         assert(PiJobTracker.shouldSpeakProgress(elapsed: 20, changed: false))
+        assert(PiJobTracker.statusChannel(note: "Pi is reading files").hasPrefix("[STATUS] Pi is reading files."))
+        assert(PiJobTracker.statusChannel(note: "  ").contains("Pi is still working"))
+        assert(PiJobTracker.failureChannel(reason: "no answer").contains("The task failed: no answer"))
+        let done = PiJobTracker.finalChannel(excerpt: "It compiled.", outcome: .done)
+        assert(done.hasPrefix("[FINAL] Pi finished."))
+        assert(done.contains("It compiled."))
+        let partial = PiJobTracker.finalChannel(excerpt: "halfway", outcome: .stopped)
+        assert(partial.contains("incomplete task (stopped)"))
+        assert(!partial.contains("pi_results"))
         print("Native runtime checks passed: playback, cancellation, tool definitions, transcript revisions, headless bridge, pi jobs, conversation history")
     }
 
@@ -357,7 +366,7 @@ struct RuntimeTests {
 
         // Wire contract (out): work
         emitted.removeAll()
-        backend.onAskPi?("call-1", "check system status")
+        backend.onSpawnThinking?("call-1", "check system status")
         assert(emitted.count == 1, "work event emitted")
         assert((emitted[0]["type"] as? String) == "work")
         assert((emitted[0]["id"] as? String) == "call-1")
@@ -417,7 +426,7 @@ struct RuntimeTests {
 
         // Wire contract (out): stop_work
         emitted.removeAll()
-        backend.onStopPi?()
+        backend.onStopThinking?()
         assert(emitted.count == 1, "stop_work event emitted")
         assert((emitted[0]["type"] as? String) == "stop_work")
 

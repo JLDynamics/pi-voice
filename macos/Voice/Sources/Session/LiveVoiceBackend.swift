@@ -18,8 +18,8 @@ final class LiveVoiceBackend: VoiceBackend, HeadlessBackend {
     var onToolDone: ((String, String) -> Void)?
     var onToolsCancelled: (() -> Void)?
     var onSpoken: ((String) -> Void)?
-    var onAskPi: ((String, String) -> Void)?
-    var onStopPi: (() -> Void)?
+    var onSpawnThinking: ((String, String) -> Void)?
+    var onStopThinking: (() -> Void)?
 
     private enum Connection {
         case idle
@@ -215,14 +215,13 @@ final class LiveVoiceBackend: VoiceBackend, HeadlessBackend {
         send(["type": "response.speak", "text": trimmed])
     }
 
-    /// Pi's finished work, entering the conversation for Luna to talk about.
+    /// Pi's finished work, on the final channel for Agent to speak.
     ///
     /// Tagged, because it arrives on the same channel as the user's own words
     /// and is otherwise indistinguishable from them — the model would answer
-    /// Pi's report as though the user had just read it aloud. The voice prompt
-    /// explains what the tag means. The text is also cached so `pi_results`
-    /// can re-read it when the spoken turn is interrupted or Luna is asked
-    /// about it later.
+    /// Pi's report as though the user had just said it. The voice prompt
+    /// explains `[FINAL]`. The full text is cached so a stopped or failed job
+    /// is not rewritten as done when findings arrive with it.
     func postResult(id: String, speak: String, full: String) {
         let trimmed = speak.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, !closed, !id.isEmpty else { return }
@@ -235,18 +234,15 @@ final class LiveVoiceBackend: VoiceBackend, HeadlessBackend {
             brief: piJobs.jobs[id]?.brief ?? "",
             extra: ["chars": complete.count]
         ))
-        let more = complete.count > trimmed.count ? "\n[More detail is available with pi_results id \(id).]" : ""
         let outcome = piJobs.jobs[id]?.state
-        let partial = outcome == .stopped || outcome == .superseded || outcome == .failed
-        let label = partial ? "[PI] Partial findings from an incomplete task (\(outcome!.rawValue)). Say what was found and what remains unresolved: " : "[PI] "
-        sendUserText(label + trimmed + more)
+        sendUserText(PiJobTracker.finalChannel(excerpt: trimmed, outcome: outcome))
         requestFollowUpIfIdle()
     }
 
-    /// Extension-pushed job phase (`job_update` over stdio). Feeds the
-    /// `pi_status` mirror; only `failed` speaks on its own. `dropped` stays
-    /// silent: the dispatch never reached Pi (muted), so there is no failure
-    /// to report.
+    /// Extension-pushed job phase (`job_update` over stdio). Feeds the local
+    /// mirror the status channel speaks from. Only `failed` speaks on its
+    /// own. `dropped` stays silent: the dispatch never reached Pi (muted), so
+    /// there is no failure to report.
     func updatePiJob(id: String, status: String, note: String?) {
         let state: PiJobTracker.State
         switch status {
@@ -266,8 +262,7 @@ final class LiveVoiceBackend: VoiceBackend, HeadlessBackend {
             if !piJobs.hasActive { piProgressTask?.cancel(); piProgressTask = nil }
         }
         if state == .failed {
-            let reason = note ?? "Pi could not complete the task"
-            sendUserText("[PI] Task \(id) failed: \(reason). Explain briefly what remains unresolved.")
+            sendUserText(PiJobTracker.failureChannel(reason: note ?? ""))
             requestFollowUpIfIdle()
         }
         if state == .done || state == .stopped || state == .failed {
@@ -278,7 +273,7 @@ final class LiveVoiceBackend: VoiceBackend, HeadlessBackend {
         }
     }
 
-    /// Give Luna a chance to report meaningful Pi changes and a quiet 20-second check-in.
+    /// Give Agent a chance to report meaningful Pi changes and a quiet 20-second check-in.
     /// Only prompt between spoken turns, so a progress update cannot cut off a sentence.
     private func startPiProgressLoop(id: String) {
         piProgressTask?.cancel()
@@ -298,8 +293,7 @@ final class LiveVoiceBackend: VoiceBackend, HeadlessBackend {
                       !self.audio.isPlaying, !self.userSpeechActive else { continue }
                 self.lastPiProgressAt = now
                 self.lastPiProgressNote = note
-                let status = note ?? "Pi is still working"
-                self.sendUserText("[PI PROGRESS] \(status). Give the user one short spoken progress update; do not present this as a new user request.")
+                self.sendUserText(PiJobTracker.statusChannel(note: note ?? ""))
                 self.requestFollowUpIfIdle()
             }
         }
@@ -762,72 +756,39 @@ final class LiveVoiceBackend: VoiceBackend, HeadlessBackend {
     }
 
     private func headlessTalkerTools() -> [[String: Any]] {
-        // Luna talks, Pi works. ask_pi/stop_pi hand work off; pi_status and
-        // pi_results read back the local job mirror (no other client-side
-        // tools remain).
-        return [Self.askPiTool, Self.stopPiTool, Self.piStatusTool, Self.piResultsTool]
+        // Agent talks. One handoff sends real work to the open Pi session.
+        // Progress and the answer arrive as [STATUS] and [FINAL], not as tools
+        // the model polls. stop_thinking cancels the current job and leaves
+        // the voice call up; `/voice stop` is what ends the call.
+        return [Self.spawnThinkingTool, Self.stopThinkingTool]
     }
 
-    private static let askPiTool: [String: Any] = [
+    private static let spawnThinkingTool: [String: Any] = [
         "type": "function",
-        "name": "ask_pi",
-        "description": "Delegate local file reading (including PDFs), resume editing, PDF/Markdown creation, terminal commands, and research to Pi in the already-open TUI. Include user-supplied paths, even outside the current folder. Pi manages permissions and approvals. Ask for a save destination if missing. A call while Pi works steers the task; corrections need no stop_pi. Returns immediately with an id; Pi's result arrives later. Use pi_status/pi_results for progress/detail.",
+        "name": "spawn_thinking",
+        "description": "Hand real work to the open Pi session: files, PDFs, resumes, the shell, web research, code changes, or anything you are not sure about. Answer casual chat yourself when you already have the context; do not call this for that. A call while Pi is working redirects the current task; the latest brief wins, so a correction does not need stop_thinking. Include paths the user gave. Ask for a missing save destination. Returns immediately. Say one short acknowledgement in this same turn, then wait. Progress arrives as [STATUS] and the answer as [FINAL]. Do not claim you already did the work.",
         "parameters": [
             "type": "object",
             "properties": [
                 "brief": [
                     "type": "string",
-                    "description": "The work Pi should do in this session.",
+                    "description": "What Pi should do or change in the current task.",
                 ],
             ],
             "required": ["brief"],
         ] as [String: Any],
     ]
 
-    /// Handing work to Pi is fire-and-forget so the voice line stays free.
-    /// That left no way to take it back: asking Luna to stop Pi got "I can't".
-    /// Stopping is a separate, equally immediate hand-off — it does not block
-    /// the voice line either, so it costs nothing that ask_pi was protecting.
-    private static let stopPiTool: [String: Any] = [
+    /// Spoken cancel for the current handoff. Fire-and-forget, like the
+    /// handoff itself, so the voice line can say what stopped. `/voice stop`
+    /// still ends the call; this does not.
+    private static let stopThinkingTool: [String: Any] = [
         "type": "function",
-        "name": "stop_pi",
-        "description": "Stop the work Pi is doing right now, when the user asks you to stop it, cancel it, or says never mind. Returns immediately. Say what you stopped.",
+        "name": "stop_thinking",
+        "description": "Stop the Pi task that is running now, when the user explicitly asks you to stop, cancel, or says never mind. Does not end the voice conversation. A correction or follow-up is spawn_thinking, not this. Returns immediately. Say what you stopped.",
         "parameters": [
             "type": "object",
             "properties": [:] as [String: Any],
-        ] as [String: Any],
-    ]
-
-    private static let piStatusTool: [String: Any] = [
-        "type": "function",
-        "name": "pi_status",
-        "description": "Check what Pi is doing right now. Returns working or queued with elapsed seconds, or idle with the last finished job. Call when the user asks what Pi is doing, or before repeating a result. Returns immediately; say what it says.",
-        "parameters": [
-            "type": "object",
-            "properties": [:] as [String: Any],
-        ] as [String: Any],
-    ]
-
-    private static let piResultsTool: [String: Any] = [
-        "type": "function",
-        "name": "pi_results",
-        "description": "Read Pi's complete finished answer in pages, beyond the short immediate [PI] handoff. Omit id for the latest result. Follow cursor until done is true. Returns immediately; speak what matters.",
-        "parameters": [
-            "type": "object",
-            "properties": [
-                "id": [
-                    "type": "string",
-                    "description": "Result id from pi_status, ask_pi, or a prior turn.",
-                ],
-                "cursor": [
-                    "type": "number",
-                    "description": "Character offset to continue from. Defaults to 0.",
-                ],
-                "limit": [
-                    "type": "number",
-                    "description": "Characters per page, max 4000. Defaults to 1500.",
-                ],
-            ],
         ] as [String: Any],
     ]
 
@@ -837,23 +798,12 @@ final class LiveVoiceBackend: VoiceBackend, HeadlessBackend {
         return text
     }
 
-    private static func askPiBrief(_ argsJson: String) -> String {
+    private static func spawnBrief(_ argsJson: String) -> String {
         guard let data = argsJson.data(using: .utf8),
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let brief = object["brief"] as? String
         else { return "" }
         return brief.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    private static func piResultsArgs(_ argsJson: String) -> (id: String?, cursor: Int, limit: Int) {
-        guard let data = argsJson.data(using: .utf8),
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            return (nil, 0, PiJobTracker.defaultPageLimit)
-        }
-        let id = (object["id"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let cursor = (object["cursor"] as? NSNumber)?.intValue ?? 0
-        let limit = (object["limit"] as? NSNumber)?.intValue ?? PiJobTracker.defaultPageLimit
-        return (id?.isEmpty == true ? nil : id, cursor, limit)
     }
 
     /// Status and result answers are the point of the call — unlike the
@@ -910,39 +860,30 @@ final class LiveVoiceBackend: VoiceBackend, HeadlessBackend {
         responseRequestPending = false
     }
 
-    /// Run a tool the server forwarded to the client (ask_pi / stop_pi /
-    /// pi_status / pi_results), post its output and ask the model to continue.
+    /// Run a tool the server forwarded to the client (`spawn_thinking` /
+    /// `stop_thinking`), post its output, and leave the voice line free.
+    /// Progress and the final answer are pushed later on their channels.
+    /// A handoff while the mic is muted still returns queued here; the
+    /// extension drops it and reports `dropped`, which stays silent.
     private func executeTool(name: String, argsJson: String, callId: String) {
         guard !closed, seenToolCalls.insert(callId).inserted else { return }
-        if name == "ask_pi" {
-            let brief = Self.askPiBrief(argsJson)
+        if name == "spawn_thinking" {
+            let brief = Self.spawnBrief(argsJson)
             let id = UUID().uuidString
             piJobs.ask(id: id, brief: brief)
             startPiProgressLoop(id: id)
             sendToolOutput(callId: callId, output: Self.json(["status": "queued", "id": id]))
             appendPiJournal(PiJobTracker.journalLine(now: Date(), event: "queued", id: id, brief: brief))
-            if !brief.isEmpty { onAskPi?(id, brief) }
+            if !brief.isEmpty { onSpawnThinking?(id, brief) }
             return
         }
-        if name == "stop_pi" {
+        if name == "stop_thinking" {
             if piJobs.hasActive {
                 sendToolOutput(callId: callId, output: "{\"status\":\"stopping\"}")
-                onStopPi?()
+                onStopThinking?()
             } else {
                 sendToolOutput(callId: callId, output: "{\"status\":\"idle\"}")
             }
-            return
-        }
-        if name == "pi_status" {
-            sendToolOutput(callId: callId, output: Self.json(piJobs.statusPayload()))
-            requestFollowUp(callId: callId)
-            return
-        }
-        if name == "pi_results" {
-            let args = Self.piResultsArgs(argsJson)
-            let payload = piJobs.resultsPayload(id: args.id, cursor: args.cursor, limit: args.limit)
-            sendToolOutput(callId: callId, output: Self.json(payload))
-            requestFollowUp(callId: callId)
             return
         }
         let generation = toolScope.generation

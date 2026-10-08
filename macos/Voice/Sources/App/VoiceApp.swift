@@ -6,7 +6,7 @@ import Foundation
 ///
 /// The SwiftUI panel (orb, transcript, settings, saved chats) was removed once
 /// Pi became the only way in — it was ~1800 lines that no longer ran. The
-/// `--headless` argument selects headless tools (ask_pi, stop_pi) in
+/// `--headless` argument selects headless tools (spawn_thinking, stop_thinking) in
 /// LiveVoiceBackend and identifies Voice processes for orphan reaping.
 @main
 enum VoiceMain {

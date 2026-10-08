@@ -107,8 +107,8 @@ export function localWhen(iso: string, timeZone?: string): string {
 
 const WORK_PREFIX = "[Earlier, Pi finished";
 
-/** Luna talking about handing work to Pi: "I'll have Pi check...", "Pi's checking...". */
-const CHATTER = /\b(?:I'll|I will|I'm going to|let me|going to)\s+(?:have|ask|get)\s+Pi\b|\bPi(?:'s| is| has| will| was)\s+(?:checking|reading|searching|sorting|working|looking|pulling|verifying|reviewing|digging|finishing)|\bverif(?:y|ying) (?:the )?(?:dates?|event dates?|sources?|when)\b|\bthe verified (?:findings|items|stories)\b/i;
+/** Agent's handoff acks: "I'll have Pi check...", "Let me look that up", "Pi's checking...". */
+const CHATTER = /\b(?:I'll|I will|I'm going to|let me|going to)\s+(?:have|ask|get)\s+Pi\b|\b(?:let me|I'll|I will)\s+(?:look|check)(?:\s+that|\s+it)?\s+up\b|\bPi(?:'s| is| has| will| was)\s+(?:checking|reading|searching|sorting|working|looking|pulling|verifying|reviewing|digging|finishing)|\bverif(?:y|ying) (?:the )?(?:dates?|event dates?|sources?|when)\b|\bthe verified (?:findings|items|stories)\b/i;
 
 /** Her handoff acknowledgments and progress updates, tagged `progress` or (older rows) recognized by wording. */
 export function isDelegationChatter(row: { role: string; kind: string; text: string }): boolean {

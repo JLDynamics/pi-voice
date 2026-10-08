@@ -19,7 +19,7 @@ export type ChildPid = number & { readonly brand: "ChildPid" };
 export type WorkId = string & { readonly brand: "WorkId" };
 export type UserText = string & { readonly brand: "UserText" };
 
-/** Immediate Pi handoff to Luna; the full answer stays available through pi_results. */
+/** Leading excerpt of Pi's answer for the [FINAL] channel. The full text is cached beside it. */
 export type ShortResult = string & { readonly brand: "ShortResult" };
 
 /** Mic closed means no capture. Speakers stay live. */
@@ -38,7 +38,7 @@ export type Job =
       startedAt: number;
       bound: boolean;
       afterEntryId: string | null;
-      /** Latest Pi tool activity, mirrored to Voice.app for `pi_status`. */
+      /** Latest Pi tool activity, mirrored to Voice.app for the [STATUS] channel. */
       lastNote: string | null;
     }
   | { tag: "abandoned"; id: WorkId };
@@ -463,8 +463,8 @@ export function step(state: VoiceState, event: VoiceEvent, world: StepWorld): St
   }
 
   if (event.tag === "work") {
-    // A dispatch Luna made while muted never reaches Pi; tell Voice.app the
-    // id is dead so `pi_status` does not report a phantom job.
+    // A dispatch Agent made while muted never reaches Pi; tell Voice.app the
+    // id is dead so the job mirror does not report a phantom job.
     if (state.mic.tag === "closed") {
       return keep(state, [{ tag: "sendJobUpdate", id: event.id, status: "dropped" }]);
     }
