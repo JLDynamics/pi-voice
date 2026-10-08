@@ -1,5 +1,7 @@
 import type {
   BeforeAgentStartEvent,
+  ContextEvent,
+  ContextEventResult,
   ExtensionAPI,
   ExtensionContext,
   InputEvent,
@@ -8,8 +10,22 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import type { AutocompleteItem, Component } from "@earendil-works/pi-tui";
 import { clearOwnedLease, liveForeignOwner, reapOrphans, VoiceChild, type VoiceHistoryTurn } from "./child.ts";
-import { bindJob, jobIdFromText, jobPrompt, lastUserJobId, openJob, settleJob, terminalJob } from "./work.ts";
 import {
+  bindJob,
+  jobIdFromText,
+  jobPrompt,
+  lastUserJobId,
+  openJob,
+  priorFindings,
+  settleJob,
+  terminalJob,
+  DELEGATION_TYPE,
+  delegationsFromBranch,
+  withDelegations,
+} from "./work.ts";
+import { appendTranscript, delegationForHandoff, setTranscript, type TranscriptEntry } from "./delegation.ts";
+import {
+  leftoverTurn,
   localWhen,
   type TurnKind,
 } from "./history.ts";
@@ -19,7 +35,7 @@ export type ChildPid = number & { readonly brand: "ChildPid" };
 export type WorkId = string & { readonly brand: "WorkId" };
 export type UserText = string & { readonly brand: "UserText" };
 
-/** Immediate Pi handoff to Luna; the full answer stays available through pi_results. */
+/** Leading excerpt of Pi's answer for the [FINAL] channel. The full text is cached beside it. */
 export type ShortResult = string & { readonly brand: "ShortResult" };
 
 /** Mic closed means no capture. Speakers stay live. */
@@ -38,8 +54,13 @@ export type Job =
       startedAt: number;
       bound: boolean;
       afterEntryId: string | null;
-      /** Latest Pi tool activity, mirrored to Voice.app for `pi_status`. */
+      /** Latest Pi tool activity, mirrored to Voice.app for the [STATUS] channel. */
       lastNote: string | null;
+      /**
+       * The voice job this one replaced. Pi may already have answered it before
+       * the steer landed; that answer is relayed once it shows up in the branch.
+       */
+      prior?: { id: WorkId; brief: UserText } | null;
     }
   | { tag: "abandoned"; id: WorkId };
 
@@ -62,6 +83,12 @@ export type VoiceState =
       /** Server item id of the held utterance; its revisions all share it. */
       heardItemId: string | null;
       typedEcho?: { text: string; until: number };
+      /**
+       * Voice transcript since the last handoff (Codex's active transcript): what
+       * was heard and what Agent said aloud, never typed text, tools, or job items.
+       * Each `work` hands it to Pi in the delegation and starts it again empty.
+       */
+      transcript?: readonly TranscriptEntry[];
     };
 
 export type VoiceCommand =
@@ -99,6 +126,8 @@ export type Effect =
   | { tag: "interruptSpeech" }
   | { tag: "injectUser"; text: UserText }
   | { tag: "sendWork"; id: WorkId; brief: UserText; deliver: "plain" | "steer" }
+  /** Store the job's `<realtime_delegation>` hidden in Pi's session, for the model only. */
+  | { tag: "saveDelegation"; id: WorkId; text: string }
   | { tag: "postResult"; id: WorkId; speak: ShortResult; full: string }
   | {
       tag: "sendJobUpdate";
@@ -145,6 +174,14 @@ export const WORK_SECTION = [
   "The user's messages reach you as speech transcripts: they may be unpunctuated or misrecognised.",
   "The Pi voice job id at the end of a delegated request is only for routing; do not mention it in your answer.",
   "Keep it concise and action-oriented.",
+  "If the brief is about the screen, this window, or a visible app, capture the frontmost window yourself.",
+  "Take the first on-screen layer-0 kCGWindowNumber (the CGWindowID, not a System Events window id), run `screencapture -x -l <id>` to a temp png, use your read tool on that png, answer from the image, then delete the file.",
+  "The voice line never receives the image, so describe what you saw in text.",
+  "If capture fails, say the terminal that launched Pi needs Screen Recording permission. Do not guess the screen.",
+  "If the brief asks to click, type, fill a form, or navigate a UI or browser, do it with the computer-use and browser tools already installed in this session.",
+  "If that control fails, say the same terminal needs Accessibility permission. Voice cannot click.",
+  "A delegated request arrives as <realtime_delegation>: <input> is the task, and <transcript_delta> is the voice conversation since the previous handoff, which the user does not see in this chat.",
+  "Use the transcript to understand the task; do not treat it as a new request.",
 ].join(" ");
 
 const WIDGET_KEY = "pi-voice";
@@ -234,16 +271,27 @@ function keep(state: VoiceState, effects: Effect[] = []): Step {
   return { state, effects };
 }
 
+/** Uncommitted speech only. Completed turns are already in the shared log. */
+function flushLeftovers(state: VoiceState): Effect[] {
+  if (state.tag !== "on") return [];
+  const effects: Effect[] = [];
+  const heard = state.heardPending?.trim() ?? "";
+  if (heard) effects.push({ tag: "recordTurn", turn: leftoverTurn("user", heard), turnKind: "voice" });
+  const spoken = state.streamingSpoken.trim();
+  if (spoken) effects.push({ tag: "recordTurn", turn: leftoverTurn("assistant", spoken), turnKind: "voice" });
+  return effects;
+}
+
 function stopLive(state: VoiceState): Step {
   if (state.tag === "off") return keep(state);
   return {
     state: { tag: "off" },
-    effects: [{ tag: "quitChild" }, { tag: "paint", strip: null }],
+    effects: [...flushLeftovers(state), { tag: "quitChild" }, { tag: "paint", strip: null }],
   };
 }
 
 function fail(state: VoiceState, message: string): Step {
-  const effects: Effect[] = [];
+  const effects: Effect[] = [...flushLeftovers(state)];
   if (state.tag !== "off") effects.push({ tag: "quitChild" });
   effects.push({ tag: "paint", strip: null }, { tag: "notify", message, kind: "error" });
   return { state: { tag: "off" }, effects };
@@ -385,7 +433,8 @@ export function step(state: VoiceState, event: VoiceEvent, world: StepWorld): St
     const newTurn = state.spokenItemId !== null && id !== state.spokenItemId;
     const text = (newTurn ? "" : state.streamingSpoken) + event.text;
     const next: VoiceState = { ...state, streamingSpoken: text, spokenItemId: id,
-      interruptedSpokenId: id === state.interruptedSpokenId ? state.interruptedSpokenId : null };
+      interruptedSpokenId: id === state.interruptedSpokenId ? state.interruptedSpokenId : null,
+      transcript: appendTranscript(state.transcript ?? [], "assistant", event.text, id) };
     const effects: Effect[] = [];
     if (newTurn && state.streamingSpoken) {
       effects.push({ tag: "upsertFace", id: state.spokenItemId!, kind: "spoken", text: state.streamingSpoken.trim(), final: true });
@@ -435,6 +484,7 @@ export function step(state: VoiceState, event: VoiceEvent, world: StepWorld): St
       heardPending: text,
       heardItemId: itemId,
       typedEcho: undefined,
+      transcript: setTranscript(state.transcript ?? [], "user", text, itemId),
     };
     effects.push({ tag: "upsertFace", id: itemId, kind: "heard", text, final: false });
     effects.push({ tag: "paint", strip: strip(next, world.now) });
@@ -452,7 +502,8 @@ export function step(state: VoiceState, event: VoiceEvent, world: StepWorld): St
       effects.push({ tag: "recordTurn", turn: { role: "user", text: state.heardPending }, turnKind: "voice" });
     }
     const id = event.itemId || state.spokenItemId || `luna:${world.now}`;
-    const next: VoiceState = { ...state, lastSpoken: text, streamingSpoken: "", spokenItemId: null, heardPending: null, heardItemId: null };
+    const next: VoiceState = { ...state, lastSpoken: text, streamingSpoken: "", spokenItemId: null, heardPending: null, heardItemId: null,
+      transcript: setTranscript(state.transcript ?? [], "assistant", text, id) };
     effects.push({ tag: "upsertFace", id, kind: "spoken", text, final: true }, { tag: "paint", strip: strip(next, world.now) });
     effects.push({
       tag: "recordTurn",
@@ -463,8 +514,8 @@ export function step(state: VoiceState, event: VoiceEvent, world: StepWorld): St
   }
 
   if (event.tag === "work") {
-    // A dispatch Luna made while muted never reaches Pi; tell Voice.app the
-    // id is dead so `pi_status` does not report a phantom job.
+    // A dispatch Agent made while muted never reaches Pi; tell Voice.app the
+    // id is dead so the job mirror does not report a phantom job.
     if (state.mic.tag === "closed") {
       return keep(state, [{ tag: "sendJobUpdate", id: event.id, status: "dropped" }]);
     }
@@ -472,14 +523,19 @@ export function step(state: VoiceState, event: VoiceEvent, world: StepWorld): St
     // request first, or the search appears in the transcript before the words
     // that prompted it. The later `spoken` event must not save it again.
     const pending = state.heardPending;
-    const ready = pending ? { ...state, heardPending: null, heardItemId: null } : state;
+    // Like Codex, the handoff takes the transcript so far and the next one starts empty.
+    const delegation: Effect = { tag: "saveDelegation", id: event.id,
+      text: delegationForHandoff(state.transcript ?? [], event.brief) };
+    const ready: VoiceState = pending
+      ? { ...state, heardPending: null, heardItemId: null, transcript: [] }
+      : { ...state, transcript: [] };
     const job = openJob(ready, event.id, event.brief, world);
     const record: Effect[] = pending
       ? [{ tag: "recordTurn", turn: { role: "user", text: pending }, turnKind: "voice" as TurnKind }]
       : [];
     return pending
-      ? { state: job.state, effects: [{ tag: "upsertFace", id: state.heardItemId!, kind: "heard", text: pending, final: true }, ...record, ...job.effects] }
-      : job;
+      ? { state: job.state, effects: [{ tag: "upsertFace", id: state.heardItemId!, kind: "heard", text: pending, final: true }, ...record, delegation, ...job.effects] }
+      : { state: job.state, effects: [delegation, ...job.effects] };
   }
 
   if (event.tag === "stopWork") {
@@ -494,6 +550,7 @@ export function step(state: VoiceState, event: VoiceEvent, world: StepWorld): St
       !world.idle && state.job.bound && lastUserJobId(world.branch) === state.job.id;
     const next: VoiceState = { ...state, job: { tag: "abandoned", id: state.job.id } };
     const effects: Effect[] = [
+      ...priorFindings(state.job, world),
       ...terminalJob(state.job, world, "stopped"),
       { tag: "upsertFace", id: `work:${state.job.id}`, kind: "work", text: `stopped: ${state.job.brief}`, final: true },
       { tag: "paint", strip: strip(next, world.now) },
@@ -521,7 +578,7 @@ export function step(state: VoiceState, event: VoiceEvent, world: StepWorld): St
     };
   }
 
-  if (event.tag === "jobMessage") return bindJob(state, event.id);
+  if (event.tag === "jobMessage") return bindJob(state, event.id, world);
   if (event.tag === "agentSettled") return settleJob(state, world);
 
   return keep(state);
@@ -573,6 +630,11 @@ export class Voice {
   private reapJob: Promise<string | undefined> | undefined;
   private thinkingRestore: string | undefined;
   private conversation: Conversation | null = null;
+  /**
+   * Delegations sent in this process, by job id. The session copy (DELEGATION_TYPE
+   * entries) is what survives a restart; this covers a branch read that misses one.
+   */
+  private readonly delegations = new Map<WorkId, string>();
   private readonly finalFaceIds = new Set<string>();
   private readonly startedSpokenIds = new Set<string>();
   private readonly spokenTexts = new Map<string, string>();
@@ -655,6 +717,18 @@ export class Voice {
     }
   }
 
+  /**
+   * Pi's `context` hook: every voice job's message reaches the model as its
+   * `<realtime_delegation>`, while the chat keeps the brief and the job id.
+   */
+  onContext(event: ContextEvent, ctx?: ExtensionContext): ContextEventResult | undefined {
+    const branch = ctx?.sessionManager?.getBranch?.() ?? this.lastCtx?.sessionManager?.getBranch?.() ?? [];
+    const found = delegationsFromBranch(branch);
+    for (const [id, text] of this.delegations) if (!found.has(id)) found.set(id, text);
+    const messages = withDelegations(event.messages, found);
+    return messages ? { messages } : undefined;
+  }
+
   feed(event: VoiceEvent, ctx?: ExtensionContext): void {
     if (ctx) this.lastCtx = ctx;
     this.commit(
@@ -723,10 +797,16 @@ export class Voice {
       case "injectUser":
         this.child?.ingestUser(effect.text);
         return;
-      case "sendWork":
-        if (effect.deliver === "steer") this.pi.sendUserMessage(jobPrompt(effect.id, effect.brief), { deliverAs: "steer" });
-        else this.pi.sendUserMessage(jobPrompt(effect.id, effect.brief));
+      case "saveDelegation":
+        this.delegations.set(effect.id, effect.text);
+        this.pi.appendEntry?.(DELEGATION_TYPE, { id: effect.id, text: effect.text });
         return;
+      case "sendWork": {
+        const prompt = jobPrompt(effect.id, effect.brief);
+        if (effect.deliver === "steer") this.pi.sendUserMessage(prompt, { deliverAs: "steer" });
+        else this.pi.sendUserMessage(prompt);
+        return;
+      }
       case "postResult":
         this.child?.postResult(effect.id, effect.speak, effect.full);
         return;

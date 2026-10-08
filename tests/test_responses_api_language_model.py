@@ -823,7 +823,7 @@ def test_out_of_band_invalid_input_emits_failed_end_of_response():
 
 
 def test_voice_prompt_research_follows_the_session_tools():
-    """A Pi-driven session publishes ask_pi and no bash: the model must not be told to curl."""
+    """A Pi-driven session publishes spawn_thinking and no bash: the model must not be told to curl."""
     from openai.types.realtime import RealtimeFunctionTool, RealtimeSessionCreateRequest
 
     handler = _make_handler()
@@ -836,7 +836,7 @@ def test_voice_prompt_research_follows_the_session_tools():
     handler.client = SimpleNamespace(responses=SimpleNamespace(create=fake_create))
     tools = [
         RealtimeFunctionTool(type="function", name=name, description=name, parameters={"type": "object"})
-        for name in ("ask_pi", "stop_pi")
+        for name in ("spawn_thinking", "stop_thinking")
     ]
     cfg = RuntimeConfig(
         chat=Chat(2),
@@ -847,5 +847,7 @@ def test_voice_prompt_research_follows_the_session_tools():
 
     system_items = [item for item in captured["input"] if item.get("role") == "system"]
     text = system_items[0]["content"][0]["text"]
-    assert "Let me have Pi check that" in text
+    assert "Let me look that up" in text
+    assert "spawn_thinking" in text
+    assert "ask_pi" not in text
     assert "curl" not in text

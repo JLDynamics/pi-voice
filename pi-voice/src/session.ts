@@ -1,5 +1,6 @@
-// Persistent voice conversations: one conversation id per working directory,
-// surviving voice calls (and reboots) until /voice new resets it.
+// Which conversation a working directory opens. The durable thread is
+// history-<id>.sqlite; this file is only the folder → id map. Resume lists
+// every thread by id, so a different folder does not split memory.
 // Mirrors the repo's secrets convention: ~/.config origin, owner-only.
 
 import { mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
@@ -20,17 +21,25 @@ export type VoiceHistoryTurn = { role: "user" | "assistant"; text: string };
  * so this should never trim; it only guards against a runaway value.
  */
 const REPLAY_ENV_BYTES = 64_000;
+/** One startup pack must survive; the env byte cap still bounds the payload. */
+const REPLAY_TURN_CHARS = 64_000;
 
 export function boundHistory(history: VoiceHistoryTurn[]): VoiceHistoryTurn[] {
-  const turns = history.map(turn => ({ ...turn, text: turn.text.slice(0, 4096) }));
-  let size = Buffer.byteLength(JSON.stringify(turns), "utf8");
+  const turns = history.map(turn => ({ ...turn, text: turn.text.slice(0, REPLAY_TURN_CHARS) }));
   let drop = 0;
-  while (size > REPLAY_ENV_BYTES && drop < turns.length) {
-    size -= Buffer.byteLength(JSON.stringify(turns[drop]), "utf8") + 1;
-    drop++;
-  }
+  const sizeFrom = (start: number) => Buffer.byteLength(JSON.stringify(turns.slice(start)), "utf8");
+  // Keep the newest turn and shorten it below, instead of discarding the whole pack.
+  while (sizeFrom(drop) > REPLAY_ENV_BYTES && drop < turns.length - 1) drop++;
   while (drop < turns.length && turns[drop].role === "assistant") drop++;
-  return turns.slice(drop);
+  const kept = turns.slice(drop);
+  while (
+    kept.length === 1 &&
+    Buffer.byteLength(JSON.stringify(kept), "utf8") > REPLAY_ENV_BYTES &&
+    kept[0].text.length > 0
+  ) {
+    kept[0] = { ...kept[0], text: kept[0].text.slice(0, Math.floor(kept[0].text.length * 0.9)) };
+  }
+  return kept;
 }
 
 export function configDir(): string {

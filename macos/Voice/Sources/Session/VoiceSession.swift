@@ -65,9 +65,8 @@ protocol VoiceBackend: AnyObject {
     func setMuted(_ muted: Bool)
     func interrupt()
     func speak(_ text: String)
-    /// Saved transcript to replay into the live conversation once the server
-    /// acknowledges the session (mirrors the web `_replayHistory`, last 20).
-    /// Each entry is (role, text) with role in user/assistant/tool.
+    /// Saved startup pack to inject once the server acknowledges the session.
+    /// Each entry is (role, text). The pack is one user-role item.
     func setHistory(_ messages: [(role: String, text: String, name: String?)])
     /// Push the current Settings tool toggles into a live session.
     func refreshTools()
@@ -99,8 +98,8 @@ final class SessionController {
     var onSpokenDelta: ((String) -> Void)?
     var onAgentDone: (() -> Void)?
     var onSpoken: ((String) -> Void)?
-    var onAskPi: ((String, String) -> Void)?
-    var onStopPi: (() -> Void)?
+    var onSpawnThinking: ((String, String) -> Void)?
+    var onStopThinking: (() -> Void)?
 
     private var pendingUserText: String?
     private var pendingUserItemId: String?
@@ -216,11 +215,11 @@ final class SessionController {
             headless.onSpoken = { [weak self] text in
                 self?.onSpoken?(text)
             }
-            headless.onAskPi = { [weak self] id, brief in
-                self?.onAskPi?(id, brief)
+            headless.onSpawnThinking = { [weak self] id, brief in
+                self?.onSpawnThinking?(id, brief)
             }
-            headless.onStopPi = { [weak self] in
-                self?.onStopPi?()
+            headless.onStopThinking = { [weak self] in
+                self?.onStopThinking?()
             }
         }
     }
@@ -279,8 +278,16 @@ final class SessionController {
             } catch is CancellationError {
                 // Cancelled via toggle during connecting; backend.stop() in end() cleans up.
             } catch {
-                state = .failed(error.localizedDescription)
-                errorText = error.localizedDescription
+                // A start that throws before the backend reports a state of
+                // its own (e.g. the local service never came up) must still
+                // reach observers. Otherwise headless Voice never emits
+                // `error` and Pi sits on "connecting" forever.
+                let message = error.localizedDescription
+                let alreadyReported: Bool
+                if case .failed = state { alreadyReported = true } else { alreadyReported = false }
+                state = .failed(message)
+                errorText = message
+                if !alreadyReported { onStateChanged?(state) }
             }
         }
         beginTask = task

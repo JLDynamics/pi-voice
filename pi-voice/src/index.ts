@@ -28,6 +28,8 @@ export default function (pi: ExtensionAPI): void {
 
   pi.on("input", (event, ctx) => voice.onInput(event, ctx));
   pi.on("before_agent_start", (event, ctx) => voice.onBeforeAgentStart(event, ctx));
+  // Each voice job reaches the model as its <realtime_delegation>, not the chat.
+  pi.on("context", (event, ctx) => voice.onContext(event, ctx));
   pi.on("message_start", (event, ctx) => {
     if (event.message.role === "assistant") {
       announcedAnswer = false;

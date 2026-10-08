@@ -15,8 +15,8 @@ final class MockVoiceBackend: VoiceBackend, HeadlessBackend {
     var onToolDone: ((String, String) -> Void)?
     var onToolsCancelled: (() -> Void)?
     var onSpoken: ((String) -> Void)?
-    var onAskPi: ((String, String) -> Void)?
-    var onStopPi: (() -> Void)?
+    var onSpawnThinking: ((String, String) -> Void)?
+    var onStopThinking: (() -> Void)?
     var interruptCount = 0
     var ingestedUserText: [String] = []
     var postedResults: [(id: String, speak: String, full: String)] = []
@@ -55,8 +55,13 @@ final class MockVoiceBackend: VoiceBackend, HeadlessBackend {
 
     private var running: Task<Void, Never>?
 
+    /// When set, `start()` throws it after reporting `.connecting`, the way
+    /// the live backend does when the local service fails to start.
+    var startError: Error?
+
     func start() async throws {
         onState?(.connecting)
+        if let startError { throw startError }
         try? await Task.sleep(nanoseconds: 700_000_000)
         running = Task { await self.play() }
     }

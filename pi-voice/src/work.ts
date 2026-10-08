@@ -1,7 +1,7 @@
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 import type { Effect, Job, ShortResult, Step, StepWorld, UserText, VoiceState, WorkId } from "./voice.ts";
 import { RESULT_MAX, strip } from "./voice.ts";
-import { workHistoryTurn } from "./history.ts";
+import { handoffHistoryTurn, workHistoryTurn } from "./history.ts";
 
 function keep(state: VoiceState, effects: Effect[] = []): Step {
   return { state, effects };
@@ -32,11 +32,34 @@ export function terminalJob(job: Extract<Job, { tag: "running" }>, world: StepWo
   return effects;
 }
 
+/**
+ * A voice job replaced by a newer dispatch is marked superseded at once, but Pi
+ * may already have finished it: the steer lands after Pi's current turn, so a
+ * second request made while Pi was writing its answer left that answer in the
+ * branch with nobody to relay or save it (seen live: a FIXME search answered,
+ * then a new task arrived, and the finding was never spoken). Relay it once.
+ */
+export function priorFindings(job: Extract<Job, { tag: "running" }>, world: StepWorld): Effect[] {
+  if (!job.prior) return [];
+  const full = (answerForJob(world.branch, job.prior.id) ?? "").trim();
+  const speak = fullResult(full);
+  if (!speak) return [];
+  return [
+    { tag: "postResult", id: job.prior.id, speak, full },
+    { tag: "recordTurn", turn: workHistoryTurn(job.prior.brief, full), turnKind: "work" },
+  ];
+}
+
+/** Clear `prior` once its answer was relayed, so it is not spoken twice. */
+function withoutPrior(job: Extract<Job, { tag: "running" }>, effects: Effect[]): Extract<Job, { tag: "running" }> {
+  return effects.length > 0 ? { ...job, prior: null } : job;
+}
+
 export function openJob(state: VoiceState, id: WorkId, brief: UserText, world: StepWorld): Step {
   if (state.tag !== "on" || state.mic.tag !== "open") return keep(state);
   const effects: Effect[] = [];
   // New routing id, same live Pi operation: steer without aborting its context.
-  // Explicit stop_pi still owns cancellation.
+  // Explicit stop_thinking still owns cancellation.
   if (state.job.tag === "running") {
     effects.push({ tag: "sendJobUpdate", id: state.job.id, status: "superseded", note: "Task updated; Pi continues" });
   }
@@ -49,23 +72,32 @@ export function openJob(state: VoiceState, id: WorkId, brief: UserText, world: S
     bound: false,
     afterEntryId: world.leafId ?? null,
     lastNote: null,
+    prior: state.job.tag === "running" ? { id: state.job.id, brief: state.job.brief } : null,
   };
   const next: VoiceState = { ...state, job };
   effects.push(
     { tag: "sendWork", id, brief, deliver },
+    { tag: "recordTurn", turn: handoffHistoryTurn(brief), turnKind: "work" },
     paint(next, world.now),
   );
   return { state: next, effects };
 }
 
-export function bindJob(state: VoiceState, id: WorkId): Step {
+export function bindJob(state: VoiceState, id: WorkId, world?: StepWorld): Step {
   if (state.tag !== "on" || state.job.tag !== "running" || state.job.bound || state.job.id !== id) return keep(state);
-  const next: VoiceState = { ...state, job: { ...state.job, bound: true } };
-  return keep(next, [{ tag: "sendJobUpdate", id: state.job.id, status: "working" }]);
+  const findings = world ? priorFindings(state.job, world) : [];
+  const next: VoiceState = { ...state, job: { ...withoutPrior(state.job, findings), bound: true } };
+  return keep(next, [{ tag: "sendJobUpdate", id: state.job.id, status: "working" }, ...findings]);
 }
 
 export function settleJob(state: VoiceState, world: StepWorld): Step {
   if (state.tag !== "on" || state.job.tag !== "running" || !state.job.bound) return keep(state);
+  const findings = priorFindings(state.job, world);
+  if (findings.length > 0) {
+    // Relay the replaced job's answer first; the current job settles as usual.
+    const rest = settleJob({ ...state, job: withoutPrior(state.job, findings) }, world);
+    return { state: rest.state, effects: [...findings, ...rest.effects] };
+  }
   if (lastUserJobId(world.branch) !== state.job.id) {
     if (!hasJobMessage(world.branch, state.job.id)) return keep(state);
     const next: VoiceState = { ...state, job: { tag: "none" } };
@@ -79,8 +111,8 @@ export function settleJob(state: VoiceState, world: StepWorld): Step {
   const next: VoiceState = { ...state, job: { tag: "none" } };
   if (!speak) {
     // Pi settled with nothing to say (every turn errored, or an empty
-    // answer). Report it as failed — not done — so `pi_status` can tell Luna
-    // the job died instead of showing a bare idle.
+    // answer). Report it as failed — not done — so the status channel can tell
+    // Agent the job died instead of going quiet.
     const failed: Effect = {
       tag: "sendJobUpdate",
       id: state.job.id,
@@ -111,9 +143,10 @@ export function settleJob(state: VoiceState, world: StepWorld): Step {
  * often sits in sentence four, and code fences were deleted outright, so the
  * one value being asked about could vanish before anyone read it.
  *
- * Pi's full answer is carried separately and remains available to Luna in
- * pages through pi_results. Pi is prompted to lead with the outcome, so this
- * excerpt can be spoken promptly without filling the voice context.
+ * Pi's full answer is carried separately and cached in Voice.app. The voice
+ * model hears this leading excerpt on the [FINAL] channel. Pi is prompted to
+ * lead with the outcome, so the excerpt can be spoken without filling the
+ * voice context. More detail is another spawn_thinking, not a paging tool.
  */
 export function fullResult(assistantText: string): ShortResult | undefined {
   const text = assistantText.trim();
@@ -129,9 +162,72 @@ export function lastUserText(branch: SessionEntry[]): UserText | undefined {
   }
 }
 
-/** An id on the delivered Pi message links one agent answer to one Luna job. */
+/**
+ * The visible Pi message for a voice job: the brief, then the id that links one
+ * agent answer to one voice job. The model sees the job's Codex-style delegation
+ * instead; see `withDelegations`. The job id stays last so routing still matches.
+ */
 export function jobPrompt(id: WorkId, brief: UserText): string {
-  return `${brief}\n\n[Pi voice job id: ${id}]`;
+  return `${brief}\n\n${jobMarker(id)}`;
+}
+
+function jobMarker(id: WorkId): string {
+  return `[Pi voice job id: ${id}]`;
+}
+
+/**
+ * Hidden session entry holding the delegation sent with one voice job. Pi draws a
+ * custom entry only through a registered renderer (none for this type) and never
+ * puts custom entries in model context, so it is stored but not shown.
+ */
+export const DELEGATION_TYPE = "pi-voice-delegation";
+
+export type DelegationEntry = { id: WorkId; text: string };
+
+/** Every stored delegation on this branch, by job id. */
+export function delegationsFromBranch(branch: readonly SessionEntry[]): Map<WorkId, string> {
+  const found = new Map<WorkId, string>();
+  for (const entry of branch) {
+    if (entry.type !== "custom" || (entry as { customType?: string }).customType !== DELEGATION_TYPE) continue;
+    const data = (entry as { data?: Partial<DelegationEntry> }).data;
+    if (data && typeof data.id === "string" && typeof data.text === "string" && data.text) {
+      found.set(data.id as WorkId, data.text);
+    }
+  }
+  return found;
+}
+
+/** A conversation message as Pi's `context` hook hands it over (only what is read here). */
+type ContextMessage = { role: string; content?: unknown };
+
+/**
+ * Give the model each voice job as Codex gives its backend agent a handoff: the
+ * `<realtime_delegation>` block (brief + voice transcript since the previous
+ * handoff) in place of the visible brief, with the job id kept last.
+ *
+ * Pi's `context` hook runs before each model request on a copy of the
+ * conversation; nothing it returns is saved or drawn, so the chat keeps showing
+ * the brief and the id. Every job message on the branch is rewritten, not only
+ * the latest, so earlier handoffs' transcript stays in view on later turns, as it
+ * does in Codex where the delegation is the stored user message.
+ * Returns undefined when no message changes.
+ */
+export function withDelegations<M extends ContextMessage>(messages: readonly M[], delegations: ReadonlyMap<WorkId, string>): M[] | undefined {
+  if (delegations.size === 0) return;
+  let next: M[] | undefined;
+  messages.forEach((message, at) => {
+    if (message.role !== "user") return;
+    const id = jobIdFromText(visibleText(message.content));
+    const delegation = id ? delegations.get(id) : undefined;
+    if (!id || !delegation) return;
+    const text = { type: "text", text: `${delegation}\n\n${jobMarker(id)}` };
+    const rest = Array.isArray(message.content)
+      ? message.content.filter((part) => !(part && typeof part === "object" && (part as { type?: unknown }).type === "text"))
+      : [];
+    next ??= messages.slice();
+    next[at] = { ...message, content: [text, ...rest] } as M;
+  });
+  return next;
 }
 
 export function lastUserJobId(branch: SessionEntry[]): WorkId | undefined {

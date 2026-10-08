@@ -59,6 +59,53 @@ def test_client_dispatch_covers_the_client_tools_and_nothing_else():
     assert _dispatched_tool_names(tools) == CLIENT_TOOL_NAMES
 
 
+def test_headless_voice_publishes_only_the_handoff():
+    """Pi voice is one handoff plus a spoken cancel. The old poll tools are gone."""
+    source = (SESSION_SOURCES / "LiveVoiceBackend.swift").read_text()
+    tools = source.split("func headlessTalkerTools()", 1)[1].split("private static func json(", 1)[0]
+    published = set(re.findall(r'"name": "([a-z_]+)"', tools))
+    assert published == {"spawn_thinking", "stop_thinking"}
+    dispatch = source.split("private func executeTool(", 1)[1].split("private func sendToolOutput(", 1)[0]
+    assert set(re.findall(r'if name == "([a-z_]+)"', dispatch)) == published
+    for retired in ("ask_pi", "stop_pi", "pi_status", "pi_results"):
+        assert f'"name": "{retired}"' not in source
+    assert '"name": "bash"' not in tools
+    assert '"name": "screenshot"' not in source
+    description = source.split('"name": "spawn_thinking"', 1)[1].split('"name": "stop_thinking"', 1)[0]
+    assert "what is on screen" in description
+    assert "click, type, fill forms, navigate" in description
+    assert "You cannot see the screen or click yourself" in description
+    assert "screenshot" not in description
+
+
+def test_mid_job_spawn_thinking_acks_a_steer():
+    """Codex answers a second handoff with "This was sent to steer the previous
+    background agent task." Voice.app must do the same, and never call it queued."""
+    source = (SESSION_SOURCES / "LiveVoiceBackend.swift").read_text()
+    description = source.split('"name": "spawn_thinking"', 1)[1].split('"parameters"', 1)[0]
+    assert "steers it: the latest brief replaces the current task" in description
+    assert "Okay, I've redirected Pi to that instead." in description
+    ban = "Never say it is queued or runs after that or next."
+    assert ban in description
+    assert "queue" not in description.replace(ban, "").lower()
+
+    dispatch = source.split("private func executeTool(", 1)[1].split('if name == "stop_thinking"', 1)[0]
+    # Whether this call steers must be read before ask() makes the new id active.
+    assert dispatch.index("let steering = piJobs.hasActive") < dispatch.index("piJobs.ask(")
+    assert "PiJobTracker.handoffAck(id: id, steering: steering)" in dispatch
+    assert '"status": "queued"' not in dispatch
+
+    tracker = (SESSION_SOURCES / "PiJobTracker.swift").read_text()
+    ack = re.search(r'static let steerAck = "(.*?)"\n', tracker)
+    assert ack, "steerAck constant not found"
+    assert ack.group(1).startswith("This was sent to steer the current Pi task.")
+    body = tracker.split("static func handoffAck(", 1)[1].split("private(set) var jobs", 1)[0]
+    assert '"status": "steering"' in body
+    assert '"status": "started"' in body
+    assert "redirected Pi to that instead" in body
+    assert "queue" not in body.lower()
+
+
 def test_every_tool_has_a_progress_label():
     """The panel shows a label for tool calls from either side while they run."""
     session = (SESSION_SOURCES / "VoiceSession.swift").read_text()
@@ -66,3 +113,18 @@ def test_every_tool_has_a_progress_label():
     labelled = set(re.findall(r'case "([a-z_]+)": desc =', session))
     missing = _published_tool_names(tools) - labelled
     assert not missing, f"tools with no progress label: {sorted(missing)}"
+
+
+def test_spawn_thinking_is_not_for_confirmations_or_status():
+    """Live, "No, AI news", "Continue", and a status question each re-sent the task
+    and Pi's search was lost. The tool says a call is only for a real change, and a
+    near-identical repeat of the running job is answered without steering."""
+    source = (SESSION_SOURCES / "LiveVoiceBackend.swift").read_text()
+    description = source.split('"name": "spawn_thinking"', 1)[1].split('"parameters"', 1)[0]
+    assert "Call again only when the task really changes" in description
+    for case in ("confirms", "repeats", "says continue", "rewords the same task", "asks how it is going"):
+        assert case in description, case
+    dispatch = source.split("private func executeTool(", 1)[1].split("private func sendToolOutput(", 1)[0]
+    assert dispatch.index("piJobs.activeRepeat(of: brief)") < dispatch.index("onSpawnThinking?(id, brief)")
+    tracker = (SESSION_SOURCES / "PiJobTracker.swift").read_text()
+    assert '"status": "already_working"' in tracker

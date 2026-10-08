@@ -1819,6 +1819,29 @@ class TestDispatchPipelineEvent:
         assert runtime_config.chat.buffer == []
         assert service._state(conn_id).response_pending is False
 
+    @pytest.mark.parametrize("transcript", [".", " ? ", "…"])
+    def test_punctuation_only_transcription_is_ignored_like_empty(
+        self,
+        service,
+        conn_id,
+        runtime_config,
+        text_prompt_queue,
+        transcript,
+    ):
+        service.dispatch_pipeline_event(conn_id, SpeechStartedEvent())
+        service.dispatch_pipeline_event(conn_id, SpeechStoppedEvent(duration_s=0.8))
+        events = service.dispatch_pipeline_event(
+            conn_id,
+            TranscriptionCompletedEvent(transcript=transcript, language_code="en"),
+        )
+
+        assert isinstance(events[0], ConversationItemInputAudioTranscriptionCompletedEvent)
+        assert events[0].transcript == ""
+        assert events[1].type == "error"
+        assert events[1].error.type == "turn_ignored"
+        assert text_prompt_queue.empty()
+        assert runtime_config.chat.buffer == []
+
     def test_stt_error_emits_stt_failed_without_response(
         self,
         service,
