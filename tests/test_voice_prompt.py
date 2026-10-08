@@ -167,3 +167,26 @@ def test_assistant_is_named_agent_and_knows_its_old_name() -> None:
         prompt = build_voice_system_prompt("P", tool_names=names)
         assert prompt.startswith("You are Agent, an AI conversation partner"), names
         assert "You are Agent (earlier turns may say Luna, your old name; do not use it)." in prompt, names
+
+
+def test_mid_job_handoff_is_a_steer_not_a_queue():
+    """A second spawn_thinking replaces the running task. Agent once told the user
+    the new task was queued after a FIXME search; Pi had been redirected and the
+    first finding was never reported."""
+    prompt = build_voice_system_prompt(PERSONA, now=NOW, tool_names=["spawn_thinking", "stop_thinking"])
+    handoff = prompt[prompt.index("## Working with Pi") :]
+    assert "That steers Pi: the latest brief wins and replaces the current task." in handoff
+    assert "Okay, I've redirected Pi to that instead." in handoff
+    assert "say the first is being replaced and they can ask again after" in handoff
+    ban = "Never say it is queued or runs after that or next;"
+    assert ban in handoff
+    # The ban is the only place queue wording appears: nothing else may describe
+    # a mid-job handoff as waiting its turn.
+    assert "queue" not in prompt.replace(ban, "").lower()
+    rest = handoff.replace(ban, "").lower()
+    for phrase in ("after that", "runs next", "is next", "next task"):
+        assert phrase not in rest, phrase
+    # The steer rule sits in the Pi block, so a session with bash and the
+    # handoff still gets it.
+    both = build_voice_system_prompt(PERSONA, now=NOW, tool_names=["bash", "spawn_thinking", "stop_thinking"])
+    assert ban in both

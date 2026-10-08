@@ -2,8 +2,8 @@ import Foundation
 
 /// Agent-side mirror of Pi's job lifecycle.
 ///
-/// The voice model does not poll this. `spawn_thinking` queues or redirects
-/// work; the extension pushes `job_update` lines as phases change; `[STATUS]`
+/// The voice model does not poll this. `spawn_thinking` starts work, or
+/// steers the running job onto a new brief; the extension pushes `job_update` lines as phases change; `[STATUS]`
 /// and `[FINAL]` channels are what Agent speaks. The payloads below stay so
 /// tests can prove a result does not rewrite a stopped or failed job.
 ///
@@ -71,6 +71,27 @@ struct PiJobTracker {
             return "[FINAL] Partial findings from an incomplete task (\(outcome.rawValue)). Say what was found and what remains unresolved. This is not the user: \(trimmed)"
         }
         return "[FINAL] Pi finished. Relay the outcome in one or two sentences. This is not the user: \(trimmed)"
+    }
+
+    /// Codex's wording for a second handoff during an active one. The latest
+    /// brief replaces the running task; nothing waits behind it.
+    static let steerAck = "This was sent to steer the current Pi task. Pi is redirected to this brief and the earlier task is replaced."
+
+    /// What the voice model gets back from `spawn_thinking`. A call while a job
+    /// is active steers it (the extension marks the old id superseded), so the
+    /// ack must not read like a second job lining up: Agent once told the user
+    /// a new task was waiting behind the first when Pi had already dropped it.
+    static func handoffAck(id: String, steering: Bool) -> [String: Any] {
+        guard steering else {
+            return [
+                "status": "started", "id": id,
+                "note": "Pi has the task. If you have not said so yet, say one short acknowledgement. Do not call spawn_thinking again for this.",
+            ]
+        }
+        return [
+            "status": "steering", "id": id,
+            "note": "\(steerAck) If you have not said so yet, say one short line such as \"Okay, I've redirected Pi to that instead.\" Do not call spawn_thinking again for this.",
+        ]
     }
 
     private(set) var jobs: [String: Job] = [:]

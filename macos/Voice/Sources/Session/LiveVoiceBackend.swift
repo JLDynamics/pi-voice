@@ -827,7 +827,7 @@ final class LiveVoiceBackend: VoiceBackend, HeadlessBackend {
     private static let spawnThinkingTool: [String: Any] = [
         "type": "function",
         "name": "spawn_thinking",
-        "description": "Hand real work to the open Pi session: files, PDFs, resumes, the shell, web research, code changes, what is on screen, controlling the computer (click, type, fill forms, navigate), or anything you are not sure about. You cannot see the screen or click yourself. Answer casual chat yourself when you already have the context; do not call this for that. A call while Pi is working redirects the current task; the latest brief wins, so a correction does not need stop_thinking. Include paths the user gave. Ask for a missing save destination. Returns immediately. Say one short acknowledgement in this same turn, then wait. Progress arrives as [STATUS] and the answer as [FINAL]. Do not claim you already did the work.",
+        "description": "Hand real work to the open Pi session: files, PDFs, resumes, the shell, web research, code changes, what is on screen, controlling the computer (click, type, fill forms, navigate), or anything you are not sure about. You cannot see the screen or click yourself. Answer casual chat yourself when you already have the context; do not call this for that. A call while Pi is working steers it: the latest brief replaces the current task, so a correction does not need stop_thinking. Then say something like \"Okay, I've redirected Pi to that instead.\" Never say it is queued or runs after that or next. Include paths the user gave. Ask for a missing save destination. Returns immediately. Say one short acknowledgement in this same turn, then wait. Progress arrives as [STATUS] and the answer as [FINAL]. Do not claim you already did the work.",
         "parameters": [
             "type": "object",
             "properties": [
@@ -925,21 +925,21 @@ final class LiveVoiceBackend: VoiceBackend, HeadlessBackend {
     /// Run a tool the server forwarded to the client (`spawn_thinking` /
     /// `stop_thinking`), post its output, and leave the voice line free.
     /// Progress and the final answer are pushed later on their channels.
-    /// A handoff while the mic is muted still returns queued here; the
+    /// A handoff while a job is active steers it, and the ack says so. A
+    /// handoff while the mic is muted still returns an ack here; the
     /// extension drops it and reports `dropped`, which stays silent.
     private func executeTool(name: String, argsJson: String, callId: String) {
         guard !closed, seenToolCalls.insert(callId).inserted else { return }
         if name == "spawn_thinking" {
             let brief = Self.spawnBrief(argsJson)
             let id = UUID().uuidString
+            // Read before ask(): the new id becomes active there.
+            let steering = piJobs.hasActive
             piJobs.ask(id: id, brief: brief)
             startPiProgressLoop(id: id)
-            sendToolOutput(callId: callId, output: Self.json([
-                "status": "queued", "id": id,
-                "note": "Pi has the task. If you have not said so yet, say one short acknowledgement. Do not call spawn_thinking again for this.",
-            ]))
+            sendToolOutput(callId: callId, output: Self.json(PiJobTracker.handoffAck(id: id, steering: steering)))
             handoffAckCallId = callId
-            appendPiJournal(PiJobTracker.journalLine(now: Date(), event: "queued", id: id, brief: brief))
+            appendPiJournal(PiJobTracker.journalLine(now: Date(), event: steering ? "steered" : "queued", id: id, brief: brief))
             if !brief.isEmpty { onSpawnThinking?(id, brief) }
             return
         }

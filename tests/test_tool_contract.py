@@ -78,6 +78,34 @@ def test_headless_voice_publishes_only_the_handoff():
     assert "screenshot" not in description
 
 
+def test_mid_job_spawn_thinking_acks_a_steer():
+    """Codex answers a second handoff with "This was sent to steer the previous
+    background agent task." Voice.app must do the same, and never call it queued."""
+    source = (SESSION_SOURCES / "LiveVoiceBackend.swift").read_text()
+    description = source.split('"name": "spawn_thinking"', 1)[1].split('"parameters"', 1)[0]
+    assert "steers it: the latest brief replaces the current task" in description
+    assert "Okay, I've redirected Pi to that instead." in description
+    ban = "Never say it is queued or runs after that or next."
+    assert ban in description
+    assert "queue" not in description.replace(ban, "").lower()
+
+    dispatch = source.split("private func executeTool(", 1)[1].split('if name == "stop_thinking"', 1)[0]
+    # Whether this call steers must be read before ask() makes the new id active.
+    assert dispatch.index("let steering = piJobs.hasActive") < dispatch.index("piJobs.ask(")
+    assert "PiJobTracker.handoffAck(id: id, steering: steering)" in dispatch
+    assert '"status": "queued"' not in dispatch
+
+    tracker = (SESSION_SOURCES / "PiJobTracker.swift").read_text()
+    ack = re.search(r'static let steerAck = "(.*?)"\n', tracker)
+    assert ack, "steerAck constant not found"
+    assert ack.group(1).startswith("This was sent to steer the current Pi task.")
+    body = tracker.split("static func handoffAck(", 1)[1].split("private(set) var jobs", 1)[0]
+    assert '"status": "steering"' in body
+    assert '"status": "started"' in body
+    assert "redirected Pi to that instead" in body
+    assert "queue" not in body.lower()
+
+
 def test_every_tool_has_a_progress_label():
     """The panel shows a label for tool calls from either side while they run."""
     session = (SESSION_SOURCES / "VoiceSession.swift").read_text()

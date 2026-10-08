@@ -652,6 +652,30 @@ struct RuntimeTests {
         assert((lastFailed?["detail"] as? String) == "Pi finished with no answer")
         assert(((lastFailed?["brief"] as? String) ?? "").contains("doomed errand"))
 
+        // A second handoff during an active job steers it; the ack says so and
+        // never reads like a second job lining up behind the first.
+        let fresh = PiJobTracker.handoffAck(id: "a1", steering: false)
+        assert((fresh["status"] as? String) == "started")
+        assert((fresh["id"] as? String) == "a1")
+        let steer = PiJobTracker.handoffAck(id: "a2", steering: true)
+        assert((steer["status"] as? String) == "steering")
+        assert((steer["id"] as? String) == "a2")
+        let steerNote = (steer["note"] as? String) ?? ""
+        assert(steerNote.hasPrefix("This was sent to steer the current Pi task."), steerNote)
+        assert(steerNote.contains("the earlier task is replaced"))
+        assert(steerNote.contains("Okay, I've redirected Pi to that instead."))
+        for ack in [fresh, steer] {
+            let text = ack.values.compactMap { $0 as? String }.joined(separator: " ").lowercased()
+            for banned in ["queue", "after that", "next", "waiting"] {
+                assert(!text.contains(banned), "handoff ack must not say \(banned): \(text)")
+            }
+        }
+        var steering = PiJobTracker()
+        steering.ask(id: "s1", brief: "search for FIXME", now: t0)
+        assert(steering.hasActive, "a running job means the next handoff steers")
+        steering.update(id: "s1", state: .superseded, note: "Task updated; Pi continues", now: t0)
+        assert(!steering.hasActive)
+
         // Human elapsed.
         assert(PiJobTracker.elapsedString(since: t0, now: t0.addingTimeInterval(9)) == "9s")
         assert(PiJobTracker.elapsedString(since: t0, now: t0.addingTimeInterval(80)) == "1m20s")
