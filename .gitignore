@@ -247,3 +247,6 @@ cover/
 
 # Lavish review artifacts (generated, local only)
 .lavish/
+
+# Pi session exports (personal conversations)
+pi-session-*.html
