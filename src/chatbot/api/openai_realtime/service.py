@@ -465,6 +465,10 @@ class RealtimeService:
 
     def _on_transcription_completed(self, conn_id: str, event: TranscriptionCompletedEvent) -> list[ServerEvent]:
         """Handle a final STT transcription: emit protocol event, append to chat, trigger LM."""
+        if event.transcript and not any(ch.isalnum() for ch in event.transcript):
+            # Punctuation alone ("." from a cough or a distant voice) has no words
+            # to answer. It used to reach the model, which replied to it out loud.
+            event = event.model_copy(update={"transcript": ""})
         st = self._state(conn_id)
         same_speculative_turn = event.turn_id is not None and event.turn_id == st.speculative_user_turn_id
         if same_speculative_turn:
