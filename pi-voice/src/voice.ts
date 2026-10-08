@@ -8,7 +8,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import type { AutocompleteItem, Component } from "@earendil-works/pi-tui";
 import { clearOwnedLease, liveForeignOwner, reapOrphans, VoiceChild, type VoiceHistoryTurn } from "./child.ts";
-import { bindJob, jobIdFromText, jobPrompt, lastUserJobId, openJob, settleJob, terminalJob } from "./work.ts";
+import { bindJob, jobIdFromText, jobPrompt, lastUserJobId, openJob, priorFindings, settleJob, terminalJob } from "./work.ts";
 import {
   leftoverTurn,
   localWhen,
@@ -41,6 +41,11 @@ export type Job =
       afterEntryId: string | null;
       /** Latest Pi tool activity, mirrored to Voice.app for the [STATUS] channel. */
       lastNote: string | null;
+      /**
+       * The voice job this one replaced. Pi may already have answered it before
+       * the steer landed; that answer is relayed once it shows up in the branch.
+       */
+      prior?: { id: WorkId; brief: UserText } | null;
     }
   | { tag: "abandoned"; id: WorkId };
 
@@ -513,6 +518,7 @@ export function step(state: VoiceState, event: VoiceEvent, world: StepWorld): St
       !world.idle && state.job.bound && lastUserJobId(world.branch) === state.job.id;
     const next: VoiceState = { ...state, job: { tag: "abandoned", id: state.job.id } };
     const effects: Effect[] = [
+      ...priorFindings(state.job, world),
       ...terminalJob(state.job, world, "stopped"),
       { tag: "upsertFace", id: `work:${state.job.id}`, kind: "work", text: `stopped: ${state.job.brief}`, final: true },
       { tag: "paint", strip: strip(next, world.now) },
@@ -540,7 +546,7 @@ export function step(state: VoiceState, event: VoiceEvent, world: StepWorld): St
     };
   }
 
-  if (event.tag === "jobMessage") return bindJob(state, event.id);
+  if (event.tag === "jobMessage") return bindJob(state, event.id, world);
   if (event.tag === "agentSettled") return settleJob(state, world);
 
   return keep(state);

@@ -1039,6 +1039,40 @@ describe("job identity", () => {
     assert.equal(recorded && recorded.tag === "recordTurn" ? recorded.turnKind : undefined, "work");
   });
 
+  it("relays a replaced voice job's finished answer once, when a new task arrives as Pi answers", () => {
+    // Live: Pi answered the FIXME search just as a new spoken task was handed
+    // over; the steer marked it superseded and the finding was never spoken.
+    const first = on({ job: runningJob("find FIXME", { bound: true }) });
+    const opened = step(first, { tag: "work", id: asWork("w2"), brief: asUser("sleep then date") }, world({ idle: false }));
+    assert.equal(opened.state.tag === "on" && opened.state.job.tag === "running" ? opened.state.job.prior?.id : undefined, "w1");
+    const branch = [
+      message("u1", "user", jobPrompt(asWork("w1"), asUser("find FIXME"))),
+      message("a1", "assistant", "Found one FIXME in main.py."),
+      message("u2", "user", jobPrompt(asWork("w2"), asUser("sleep then date"))),
+    ];
+    const bound = step(opened.state, { tag: "jobMessage", id: asWork("w2") }, world({ branch, idle: false }));
+    const post = bound.effects.find((e) => e.tag === "postResult");
+    assert.equal(post && post.tag === "postResult" ? `${post.id}:${post.speak}` : undefined, "w1:Found one FIXME in main.py.");
+    const saved = bound.effects.find((e) => e.tag === "recordTurn");
+    assert.ok(saved && saved.tag === "recordTurn" && saved.turn.text.startsWith('[Pi result "find FIXME"]'));
+    const settled = step(bound.state, { tag: "agentSettled" }, world({ branch: [...branch, message("a2", "assistant", "It is Thursday.")] }));
+    const posts = settled.effects.filter((e) => e.tag === "postResult").map((e) => e.tag === "postResult" ? e.id : "");
+    assert.deepEqual(posts, ["w2"], "the replaced answer is not relayed twice");
+  });
+
+  it("does not relay a replaced job that Pi never answered", () => {
+    const opened = step(on({ job: runningJob("todo", { bound: true }) }), { tag: "work", id: asWork("w2"), brief: asUser("fixme instead") }, world({ idle: false }));
+    const branch = [
+      message("u1", "user", jobPrompt(asWork("w1"), asUser("todo"))),
+      message("u2", "user", jobPrompt(asWork("w2"), asUser("fixme instead"))),
+      message("a2", "assistant", "One FIXME."),
+    ];
+    const bound = step(opened.state, { tag: "jobMessage", id: asWork("w2") }, world({ branch, idle: false }));
+    assert.ok(!tags(bound.effects).includes("postResult"));
+    const settled = step(bound.state, { tag: "agentSettled" }, world({ branch }));
+    assert.deepEqual(settled.effects.filter((e) => e.tag === "postResult").map((e) => e.tag === "postResult" ? e.id : ""), ["w2"]);
+  });
+
   it("does not take an answer from a later unrelated turn", () => {
     const branch = [
       message("u1", "user", jobPrompt(asWork("w1"), asUser("check"))),

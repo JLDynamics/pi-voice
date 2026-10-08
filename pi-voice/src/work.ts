@@ -32,6 +32,29 @@ export function terminalJob(job: Extract<Job, { tag: "running" }>, world: StepWo
   return effects;
 }
 
+/**
+ * A voice job replaced by a newer dispatch is marked superseded at once, but Pi
+ * may already have finished it: the steer lands after Pi's current turn, so a
+ * second request made while Pi was writing its answer left that answer in the
+ * branch with nobody to relay or save it (seen live: a FIXME search answered,
+ * then a new task arrived, and the finding was never spoken). Relay it once.
+ */
+export function priorFindings(job: Extract<Job, { tag: "running" }>, world: StepWorld): Effect[] {
+  if (!job.prior) return [];
+  const full = (answerForJob(world.branch, job.prior.id) ?? "").trim();
+  const speak = fullResult(full);
+  if (!speak) return [];
+  return [
+    { tag: "postResult", id: job.prior.id, speak, full },
+    { tag: "recordTurn", turn: workHistoryTurn(job.prior.brief, full), turnKind: "work" },
+  ];
+}
+
+/** Clear `prior` once its answer was relayed, so it is not spoken twice. */
+function withoutPrior(job: Extract<Job, { tag: "running" }>, effects: Effect[]): Extract<Job, { tag: "running" }> {
+  return effects.length > 0 ? { ...job, prior: null } : job;
+}
+
 export function openJob(state: VoiceState, id: WorkId, brief: UserText, world: StepWorld): Step {
   if (state.tag !== "on" || state.mic.tag !== "open") return keep(state);
   const effects: Effect[] = [];
@@ -49,6 +72,7 @@ export function openJob(state: VoiceState, id: WorkId, brief: UserText, world: S
     bound: false,
     afterEntryId: world.leafId ?? null,
     lastNote: null,
+    prior: state.job.tag === "running" ? { id: state.job.id, brief: state.job.brief } : null,
   };
   const next: VoiceState = { ...state, job };
   effects.push(
@@ -59,14 +83,21 @@ export function openJob(state: VoiceState, id: WorkId, brief: UserText, world: S
   return { state: next, effects };
 }
 
-export function bindJob(state: VoiceState, id: WorkId): Step {
+export function bindJob(state: VoiceState, id: WorkId, world?: StepWorld): Step {
   if (state.tag !== "on" || state.job.tag !== "running" || state.job.bound || state.job.id !== id) return keep(state);
-  const next: VoiceState = { ...state, job: { ...state.job, bound: true } };
-  return keep(next, [{ tag: "sendJobUpdate", id: state.job.id, status: "working" }]);
+  const findings = world ? priorFindings(state.job, world) : [];
+  const next: VoiceState = { ...state, job: { ...withoutPrior(state.job, findings), bound: true } };
+  return keep(next, [{ tag: "sendJobUpdate", id: state.job.id, status: "working" }, ...findings]);
 }
 
 export function settleJob(state: VoiceState, world: StepWorld): Step {
   if (state.tag !== "on" || state.job.tag !== "running" || !state.job.bound) return keep(state);
+  const findings = priorFindings(state.job, world);
+  if (findings.length > 0) {
+    // Relay the replaced job's answer first; the current job settles as usual.
+    const rest = settleJob({ ...state, job: withoutPrior(state.job, findings) }, world);
+    return { state: rest.state, effects: [...findings, ...rest.effects] };
+  }
   if (lastUserJobId(world.branch) !== state.job.id) {
     if (!hasJobMessage(world.branch, state.job.id)) return keep(state);
     const next: VoiceState = { ...state, job: { tag: "none" } };
