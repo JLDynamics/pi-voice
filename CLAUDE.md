@@ -110,10 +110,10 @@ Architecture & purity: `step()` / `handleCommand()` in `voice.ts` and `work.ts` 
 
 ## Working in this checkout
 
-- **Verification or review:** read `scripts/AGENT-VERIFICATION.md` for boundary-specific completion criteria, safe service ownership, and pending integration gaps from the session retrospective.
+- **Verification:** use the `verify-pi-voice` skill, `.cursor/skills/verify-pi-voice/SKILL.md`. `pv.py launch`, `doctor`, `drive <feature> --via backend|voice|pi`, and `cleanup` run an isolated backend on its own port with temp config, TMPDIR and Pi session dirs, and keep the evidence. `scripts/AGENT-VERIFICATION.md` has boundary-specific completion criteria.
 
 - **`AGENTS.md` is a short pointer to this file** for other coding agents. Keep facts here, not there.
-- **Tests:** Python tests are flat `tests/test_*.py` plus `tests/openai_realtime/` (own `conftest.py`); Swift tests are one file, `macos/Voice/Tests/RuntimeTests.swift`; pi-voice tests are `voice.test.ts` and `work.test.ts`.
+- **Tests:** Python tests are flat `tests/test_*.py` plus `tests/openai_realtime/` (own `conftest.py`); Swift tests are one file, `macos/Voice/Tests/RuntimeTests.swift`; pi-voice tests are `pi-voice/src/*.test.ts`.
 - **Other scripts:** `macos/Voice/scripts/install.sh` copies the build into `/Applications`; `scripts/print_system_prompt.py` prints Luna's system prompt.
 
 - **This is a standalone repo** with its own `.venv`. This public copy begins with a fresh, independent history. The launch scripts prepend their own directory's `src` (`$HERE/src`, `$ROOT/src`) to `PYTHONPATH` — cwd does not matter, guaranteeing the backend runs *this* tree's `chatbot` rather than another copy on the machine.

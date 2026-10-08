@@ -45,16 +45,18 @@ out of tool output as well as commits. Rotate a credential if exposed.
 
 ## Review findings from the October 2026 session
 
-These are pending product fixes, not claims of completed verification:
+Status as of the agent-friendly refactor (see `docs/refactor/PLAN.md`):
 
-- `VoiceChild.spawn` accepts two arguments, but `startChild` supplies three;
-  the archive path never reaches `headlessChildEnv`.
-- Swift still caps history at 20 messages, despite the 80-message TS replay.
-- Empty cabinets are seeded from the branch, including after `/voice new`.
-- Resume numbers are recomputed on selection instead of retaining the shown list.
-- Superseded results use the normal finished-result path; partial labeling and
-  terminal-state preservation need cross-language coverage. Stop/replacement
-  paths still require investigation rather than assuming settlement covers them.
+- Fixed: `VoiceChild.spawn` takes `(onEvent, history)` and `startChild` passes two
+  arguments.
+- Fixed: Swift no longer caps history at 20 messages (removed in a331063). The
+  backend keeps `CHAT_SIZE` user turns (100 under `run-openrouter.sh`) and then
+  compacts, so the startup pack survives a long call.
+- Fixed: `/voice new` and resumed cabinets are never seeded from the branch, and
+  resume numbers use the list that was shown (`conversation.test.ts`).
+- Open: a superseded job whose answer Pi had already finished is stored as a
+  complete `[Pi result …]` but spoken as partial. This needs a product decision
+  before a cross-language test (plan unit U11).
 
 CI now runs existing TypeScript and Swift tests as well as Python checks.
 TypeScript typechecking remains a gap: Node's type stripping does not check
