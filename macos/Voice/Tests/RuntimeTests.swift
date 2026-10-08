@@ -670,6 +670,32 @@ struct RuntimeTests {
                 assert(!text.contains(banned), "handoff ack must not say \(banned): \(text)")
             }
         }
+        // A near-identical brief right after the job starts is a repeat: it is
+        // answered without steering, so Pi's in-flight search is not thrown away.
+        var repeats = PiJobTracker()
+        repeats.ask(id: "r1", brief: "Search the web for the latest AI news from today.", now: t0)
+        assert(repeats.activeRepeat(of: "search the web for the latest AI news from today", now: t0.addingTimeInterval(8)) == "r1")
+        assert(repeats.activeRepeat(of: "Please search the web for latest AI news today", now: t0.addingTimeInterval(8)) == "r1")
+        assert(repeats.activeRepeat(of: "Search the web for the latest area news from today.", now: t0.addingTimeInterval(8)) == nil,
+               "a word that changes the task still steers")
+        assert(repeats.activeRepeat(of: "Check the weather in Calgary", now: t0.addingTimeInterval(8)) == nil)
+        assert(repeats.activeRepeat(of: "Search the web for the latest AI news from today with sources", now: t0.addingTimeInterval(8)) == nil,
+               "an added requirement still steers")
+        assert(repeats.activeRepeat(of: "Search the web for the latest AI news from today.", now: t0.addingTimeInterval(31)) == nil,
+               "after the window a repeat is a deliberate redo")
+        assert(repeats.activeRepeat(of: "", now: t0.addingTimeInterval(1)) == nil)
+        repeats.update(id: "r1", state: .done, note: nil, now: t0.addingTimeInterval(2))
+        assert(repeats.activeRepeat(of: "Search the web for the latest AI news from today.", now: t0.addingTimeInterval(3)) == nil,
+               "a finished job is not repeated, it is asked again")
+        let repeatAck = PiJobTracker.repeatAck(id: "r1")
+        assert((repeatAck["status"] as? String) == "already_working")
+        assert((repeatAck["id"] as? String) == "r1")
+        let repeatText = repeatAck.values.compactMap { $0 as? String }.joined(separator: " ").lowercased()
+        assert(repeatText.contains("nothing was sent"))
+        for banned in ["queue", "after that", "next", "waiting", "redirected"] {
+            assert(!repeatText.contains(banned), "repeat ack must not say \(banned): \(repeatText)")
+        }
+
         var steering = PiJobTracker()
         steering.ask(id: "s1", brief: "search for FIXME", now: t0)
         assert(steering.hasActive, "a running job means the next handoff steers")

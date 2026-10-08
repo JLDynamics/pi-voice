@@ -113,3 +113,18 @@ def test_every_tool_has_a_progress_label():
     labelled = set(re.findall(r'case "([a-z_]+)": desc =', session))
     missing = _published_tool_names(tools) - labelled
     assert not missing, f"tools with no progress label: {sorted(missing)}"
+
+
+def test_spawn_thinking_is_not_for_confirmations_or_status():
+    """Live, "No, AI news", "Continue", and a status question each re-sent the task
+    and Pi's search was lost. The tool says a call is only for a real change, and a
+    near-identical repeat of the running job is answered without steering."""
+    source = (SESSION_SOURCES / "LiveVoiceBackend.swift").read_text()
+    description = source.split('"name": "spawn_thinking"', 1)[1].split('"parameters"', 1)[0]
+    assert "Call again only when the task really changes" in description
+    for case in ("confirms", "repeats", "says continue", "rewords the same task", "asks how it is going"):
+        assert case in description, case
+    dispatch = source.split("private func executeTool(", 1)[1].split("private func sendToolOutput(", 1)[0]
+    assert dispatch.index("piJobs.activeRepeat(of: brief)") < dispatch.index("onSpawnThinking?(id, brief)")
+    tracker = (SESSION_SOURCES / "PiJobTracker.swift").read_text()
+    assert '"status": "already_working"' in tracker

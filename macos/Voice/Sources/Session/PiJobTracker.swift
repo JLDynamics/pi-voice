@@ -102,6 +102,52 @@ struct PiJobTracker {
     /// "nothing ever started" for tests and the journal.
     private(set) var lastTerminal: Job?
 
+    /// How soon after a job starts a near-identical brief counts as a repeat.
+    static let repeatWindow: TimeInterval = 30
+
+    /// What `spawn_thinking` returns for a repeat of the running task. Nothing
+    /// reaches Pi, so its in-flight work (a web search, say) keeps going.
+    static func repeatAck(id: String) -> [String: Any] {
+        [
+            "status": "already_working", "id": id,
+            "note": "Pi is already on this same task, so nothing was sent and its work continues. If you have not said so yet, say briefly that Pi is still on it. Do not call spawn_thinking again for this.",
+        ]
+    }
+
+    /// Lowercased words and numbers, the comparison unit for `sameTask`.
+    static func taskWords(_ text: String) -> Set<String> {
+        Set(text.lowercased().split { !($0.isLetter || $0.isNumber) }.map(String.init))
+    }
+
+    /// Words whose presence never changes what a brief asks for.
+    static let fillerWords: Set<String> = [
+        "a", "an", "the", "and", "or", "for", "from", "of", "to", "in", "on", "at", "with", "about",
+        "please", "me", "my", "us", "our", "it", "this", "that", "is", "are", "can", "could", "you",
+        "just", "again", "now", "still", "ok", "okay", "yes", "yeah", "so", "then", "do", "go", "ahead",
+    ]
+
+    /// Two briefs ask for the same thing when they differ only in case,
+    /// punctuation, word order, or filler words. "Search the latest AI news."
+    /// and "search for the latest AI news" match; "AI news" and "area news" do
+    /// not, because one real word changed.
+    static func sameTask(_ a: String, _ b: String) -> Bool {
+        let x = taskWords(a).subtracting(fillerWords), y = taskWords(b).subtracting(fillerWords)
+        guard !x.isEmpty else { return false }
+        return x == y
+    }
+
+    /// The active job's id when `brief` repeats it within `repeatWindow` of its
+    /// start. A small reword, "continue", or a confirmation that the voice model
+    /// still turned into a handoff would otherwise steer Pi onto the same task
+    /// and throw away the work in progress. A real change still steers.
+    func activeRepeat(of brief: String, now: Date = Date()) -> String? {
+        guard let id = activeId, let job = jobs[id],
+              job.state == .queued || job.state == .working,
+              now.timeIntervalSince(job.startedAt) <= Self.repeatWindow,
+              Self.sameTask(job.brief, brief) else { return nil }
+        return id
+    }
+
     var hasActive: Bool {
         guard let id = activeId, let job = jobs[id] else { return false }
         return job.state == .queued || job.state == .working

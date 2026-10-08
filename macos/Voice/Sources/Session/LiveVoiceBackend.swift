@@ -827,7 +827,7 @@ final class LiveVoiceBackend: VoiceBackend, HeadlessBackend {
     private static let spawnThinkingTool: [String: Any] = [
         "type": "function",
         "name": "spawn_thinking",
-        "description": "Hand real work to the open Pi session: files, PDFs, resumes, the shell, web research, code changes, what is on screen, controlling the computer (click, type, fill forms, navigate), or anything you are not sure about. You cannot see the screen or click yourself. Answer casual chat yourself when you already have the context; do not call this for that. A call while Pi is working steers it: the latest brief replaces the current task, so a correction does not need stop_thinking. Then say something like \"Okay, I've redirected Pi to that instead.\" Never say it is queued or runs after that or next. Include paths the user gave. Ask for a missing save destination. Returns immediately. Say one short acknowledgement in this same turn, then wait. Progress arrives as [STATUS] and the answer as [FINAL]. Do not claim you already did the work.",
+        "description": "Hand real work to the open Pi session: files, PDFs, resumes, the shell, web research, code changes, what is on screen, controlling the computer (click, type, fill forms, navigate), or anything you are not sure about. You cannot see the screen or click yourself. Answer casual chat yourself when you already have the context; do not call this for that. A call while Pi is working steers it: the latest brief replaces the current task, so a correction does not need stop_thinking. Call again only when the task really changes, not when the user just confirms, repeats, says continue, rewords the same task, or asks how it is going (answer that from [STATUS]). Then say something like \"Okay, I've redirected Pi to that instead.\" Never say it is queued or runs after that or next. Include paths the user gave. Ask for a missing save destination. Returns immediately. Say one short acknowledgement in this same turn, then wait. Progress arrives as [STATUS] and the answer as [FINAL]. Do not claim you already did the work.",
         "parameters": [
             "type": "object",
             "properties": [
@@ -932,6 +932,13 @@ final class LiveVoiceBackend: VoiceBackend, HeadlessBackend {
         guard !closed, seenToolCalls.insert(callId).inserted else { return }
         if name == "spawn_thinking" {
             let brief = Self.spawnBrief(argsJson)
+            // The same task again within seconds: keep Pi's current work.
+            if let current = piJobs.activeRepeat(of: brief) {
+                sendToolOutput(callId: callId, output: Self.json(PiJobTracker.repeatAck(id: current)))
+                handoffAckCallId = callId
+                appendPiJournal(PiJobTracker.journalLine(now: Date(), event: "repeat", id: current, brief: brief))
+                return
+            }
             let id = UUID().uuidString
             // Read before ask(): the new id becomes active there.
             let steering = piJobs.hasActive

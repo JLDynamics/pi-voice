@@ -190,3 +190,21 @@ def test_mid_job_handoff_is_a_steer_not_a_queue():
     # handoff still gets it.
     both = build_voice_system_prompt(PERSONA, now=NOW, tool_names=["bash", "spawn_thinking", "stop_thinking"])
     assert ban in both
+
+
+def test_confirm_continue_and_status_do_not_respawn_pi():
+    """A live search was redirected for "No, AI news", "Continue", and a status
+    question. Each spawn_thinking replaced the running task. Only a real change
+    of task may steer Pi; a confirmation, repeat, or progress question may not."""
+    prompt = build_voice_system_prompt(PERSONA, now=NOW, tool_names=["spawn_thinking", "stop_thinking"])
+    handoff = prompt[prompt.index("## Working with Pi") :]
+    assert "A new request or a real correction while Pi works calls spawn_thinking again." in handoff
+    assert (
+        "If they only confirm, repeat, say continue, or reword the same task, do not call spawn_thinking; "
+        "Pi is already on it." in handoff
+    )
+    assert "Asked how it's going, answer from the latest [STATUS] or say Pi is still working; no spawn_thinking." in (
+        handoff
+    )
+    # The old rule sent every correction, however small, back to Pi.
+    assert "A correction or new request while Pi works calls spawn_thinking again." not in prompt
