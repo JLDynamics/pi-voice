@@ -273,8 +273,8 @@ final class LiveVoiceBackend: VoiceBackend, HeadlessBackend {
         }
     }
 
-    /// Give Agent a chance to report meaningful Pi changes and a quiet 20-second check-in.
-    /// Only prompt between spoken turns, so a progress update cannot cut off a sentence.
+    /// Record a changed Pi note as silent [STATUS] context. No follow-up, so it
+    /// is not spoken. Insert only between turns, so it cannot cut off a sentence.
     private func startPiProgressLoop(id: String) {
         piProgressTask?.cancel()
         lastPiProgressAt = Date()
@@ -294,7 +294,6 @@ final class LiveVoiceBackend: VoiceBackend, HeadlessBackend {
                 self.lastPiProgressAt = now
                 self.lastPiProgressNote = note
                 self.sendUserText(PiJobTracker.statusChannel(note: note ?? ""))
-                self.requestFollowUpIfIdle()
             }
         }
     }

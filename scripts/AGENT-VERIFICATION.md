@@ -20,8 +20,8 @@ stable resume-list numbering, and a corrupt-cabinet fallback. Test the public
 command/lifecycle rather than manually reproducing only its reducer effects.
 
 For delegation changes, verify success, partial failure, explicit stop, and
-replacement during an active job. Check spoken text against the `[STATUS]` and
-`[FINAL]` channels and the job mirror together: receiving a result must not
+replacement during an active job. `[STATUS]` is silent context. Check spoken
+text against the `[FINAL]` channel and the job mirror together: receiving a result must not
 turn a stopped or failed job into a completed job. Label incomplete findings
 as partial. Agent has no `pi_status` or `pi_results` tool.
 

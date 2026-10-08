@@ -42,15 +42,17 @@ struct PiJobTracker {
     static let maxPageLimit = 4000
     static let journalFileName = "pi-voice.jobs.jsonl"
 
+    /// Whether a changed note is old enough to record as silent context.
+    /// Unchanged time never qualifies: there is no repeating check-in.
     static func shouldSpeakProgress(elapsed: TimeInterval, changed: Bool) -> Bool {
-        (changed && elapsed >= 8) || elapsed >= 20
+        changed && elapsed >= 8
     }
 
-    /// Progress channel. Spoken once per meaningful change, not on a poll.
+    /// Progress channel. Context only; the caller must not request a follow-up.
     static func statusChannel(note: String) -> String {
         let body = note.trimmingCharacters(in: .whitespacesAndNewlines)
         let status = body.isEmpty ? "Pi is still working" : body
-        return "[STATUS] \(status). One short spoken progress update; this is not a new user request."
+        return "[STATUS] \(status). Background progress for context only; do not speak it. This is not the user."
     }
 
     /// Failure is a status update of its own. `dropped` stays silent: mute

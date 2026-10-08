@@ -87,6 +87,9 @@ def test_voice_prompt_explains_how_to_speak_for_pi():
     """Agent relays Pi's work; without these rules it reads the terminal aloud."""
     prompt = build_voice_system_prompt(PERSONA, now=NOW, tool_names=["spawn_thinking", "stop_thinking"])
     assert "[STATUS]" in prompt
+    assert "silent background progress" in prompt
+    assert "do not speak it" in prompt
+    assert "speak one short update" not in prompt
     assert "[FINAL]" in prompt
     assert "not the user" in prompt
     assert "Never read a tag aloud" in prompt
