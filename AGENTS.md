@@ -7,6 +7,6 @@ The rules most likely to bite:
 - If `:8766/health` reports `foreign`, stop: that may be another active session. Do not run `./run-browser.sh --reuse-running`, this checkout's Voice.app, or `/voice`.
 - Never `pkill` by process name; stop only the launcher you started.
 - `Voice.app` has no window by design. Do not add one; anything user-facing belongs in Pi.
-- Verify through the real path (`/health`, `/v1/usage`, real WebSocket events). Mock only at the OpenRouter boundary.
+- Verify through the real path (`/health`, `/v1/usage`, real WebSocket events). Mock only at the OpenRouter boundary. The `verify-pi-voice` skill (`.cursor/skills/verify-pi-voice/SKILL.md`) scripts this on an isolated port with temp config.
 - Keep secrets in `~/.config/chatbot/env` (mode 600), never in the repo.
 - Work on a feature branch off `main`, one change per PR.
