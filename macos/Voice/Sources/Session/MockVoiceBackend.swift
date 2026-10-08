@@ -55,8 +55,13 @@ final class MockVoiceBackend: VoiceBackend, HeadlessBackend {
 
     private var running: Task<Void, Never>?
 
+    /// When set, `start()` throws it after reporting `.connecting`, the way
+    /// the live backend does when the local service fails to start.
+    var startError: Error?
+
     func start() async throws {
         onState?(.connecting)
+        if let startError { throw startError }
         try? await Task.sleep(nanoseconds: 700_000_000)
         running = Task { await self.play() }
     }

@@ -97,6 +97,7 @@ struct RuntimeTests {
         testIdleChromeKeepsMute()
         testHeadlessBridge()
         await testSessionConversationHistory()
+        await testStartFailureReachesBridge()
         testPiJobTracker()
         assert(!PiJobTracker.shouldSpeakProgress(elapsed: 7, changed: true))
         assert(PiJobTracker.shouldSpeakProgress(elapsed: 8, changed: true))
@@ -448,6 +449,47 @@ struct RuntimeTests {
         backend.onUserFinal?("hello again", "item-reattach")
         assert(emitted.count == 1, "reattached bridge must emit exactly one heard event")
         assert((emitted[0]["type"] as? String) == "heard")
+    }
+
+    @MainActor
+    static func testStartFailureReachesBridge() async {
+        assert(LocalServiceStarter.lastError(inLogText: "Starting...\nError: chatbot is not installed. Run: uv sync\n")
+            == "chatbot is not installed. Run: uv sync")
+        assert(LocalServiceStarter.lastError(inLogText: "Error: port 8766 is other.\n") == "port 8766 is other")
+        assert(LocalServiceStarter.lastError(inLogText: "Starting...\nVoice backend on port 8766.\n") == nil)
+
+        // A start() that throws (the local service never came up) must emit
+        // `error`, or Pi stays on "connecting" forever.
+        struct Boom: LocalizedError { var errorDescription: String? { "Local service startup failed." } }
+        let backend = MockVoiceBackend()
+        backend.startError = Boom()
+        let session = SessionController(backend: backend)
+        let bridge = HeadlessBridge()
+        var emitted = [[String: Any]]()
+        bridge.emitSink = { emitted.append($0) }
+        bridge.attach(session: session, listenToStdin: false)
+        await session.begin()
+        let errors = emitted.filter { ($0["type"] as? String) == "error" }
+        assert(errors.count == 1, "start failure emits exactly one error event")
+        assert((errors.first?["message"] as? String) == "Local service startup failed.")
+        assert(!emitted.contains { ($0["type"] as? String) == "ready" })
+        assert(session.state == .failed("Local service startup failed."))
+
+        // A backend that already reported its failure is not reported twice.
+        let reporting = MockVoiceBackend()
+        reporting.startError = Boom()
+        let reportingSession = SessionController(backend: reporting)
+        let reportingBridge = HeadlessBridge()
+        var reported = [[String: Any]]()
+        reportingBridge.emitSink = { reported.append($0) }
+        reportingBridge.attach(session: reportingSession, listenToStdin: false)
+        let original = reporting.onState
+        reporting.onState = { state in
+            original?(state)
+            if state == .connecting { original?(.failed("Local service startup failed.")) }
+        }
+        await reportingSession.begin()
+        assert(reported.filter { ($0["type"] as? String) == "error" }.count == 1, "no duplicate error event")
     }
 
     @MainActor

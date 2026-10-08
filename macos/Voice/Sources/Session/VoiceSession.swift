@@ -278,8 +278,16 @@ final class SessionController {
             } catch is CancellationError {
                 // Cancelled via toggle during connecting; backend.stop() in end() cleans up.
             } catch {
-                state = .failed(error.localizedDescription)
-                errorText = error.localizedDescription
+                // A start that throws before the backend reports a state of
+                // its own (e.g. the local service never came up) must still
+                // reach observers. Otherwise headless Voice never emits
+                // `error` and Pi sits on "connecting" forever.
+                let message = error.localizedDescription
+                let alreadyReported: Bool
+                if case .failed = state { alreadyReported = true } else { alreadyReported = false }
+                state = .failed(message)
+                errorText = message
+                if !alreadyReported { onStateChanged?(state) }
             }
         }
         beginTask = task
