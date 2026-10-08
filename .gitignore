@@ -1,6 +1,7 @@
 # Local agent / editor leftovers
 .claude/
-.cursor/
+.cursor/*
+!.cursor/skills/
 .pi/
 .code-review-graph/
 artifacts/
