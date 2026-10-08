@@ -52,6 +52,25 @@ struct RuntimeTests {
         assert(!VoiceToolFollowUp.shouldSend(pendingTools: 0, responseActive: true))
         assert(!VoiceToolFollowUp.shouldSend(pendingTools: 1, responseActive: true))
         assert(VoiceToolFollowUp.shouldSend(pendingTools: 0, responseActive: false))
+        // A handoff the model made without a word must still be acknowledged
+        // (live runs: text='' with spawn_thinking every time), once, and never
+        // on top of a reply that already spoke or was cut off.
+        assert(VoiceToolFollowUp.shouldAcknowledgeHandoff(handoffCalled: true, spokenText: " \n", cancelled: false))
+        assert(!VoiceToolFollowUp.shouldAcknowledgeHandoff(handoffCalled: true, spokenText: "On it.", cancelled: false))
+        assert(!VoiceToolFollowUp.shouldAcknowledgeHandoff(handoffCalled: true, spokenText: "", cancelled: true))
+        assert(!VoiceToolFollowUp.shouldAcknowledgeHandoff(handoffCalled: false, spokenText: "", cancelled: false))
+        assert(!VoiceToolFollowUp.shouldAcknowledgeHandoff(handoffCalled: true, spokenText: "", cancelled: false, muted: true),
+               "a muted handoff is dropped by the extension; do not promise it")
+        // Pi's [FINAL] waits while the server answers a transcribed turn it has
+        // not announced yet, but never forever.
+        // turn_ignored arrives as error.type with a null code; it is not a failure.
+        assert(VoiceServerError.kind(["type": "turn_ignored", "code": NSNull(), "message": "Turn ignored (no_text)"]) == "turn_ignored")
+        assert(VoiceServerError.kind(["type": "invalid_request_error", "code": "response_cancel_not_active"]) == "response_cancel_not_active")
+        assert(VoiceServerError.kind(["message": "x"]) == "")
+        let heldAt = Date()
+        assert(!VoiceContextHold.shouldHold(implicitTurnSince: nil, now: heldAt))
+        assert(VoiceContextHold.shouldHold(implicitTurnSince: heldAt, now: heldAt.addingTimeInterval(3)))
+        assert(!VoiceContextHold.shouldHold(implicitTurnSince: heldAt, now: heldAt.addingTimeInterval(VoiceContextHold.maxHold)))
 
         let scope = VoiceWorkScope()
         let oldGeneration = scope.generation
@@ -97,11 +116,26 @@ struct RuntimeTests {
         testIdleChromeKeepsMute()
         testHeadlessBridge()
         await testSessionConversationHistory()
+        await testStartFailureReachesBridge()
         testPiJobTracker()
         assert(!PiJobTracker.shouldSpeakProgress(elapsed: 7, changed: true))
         assert(PiJobTracker.shouldSpeakProgress(elapsed: 8, changed: true))
+        assert(PiJobTracker.shouldSpeakProgress(elapsed: 20, changed: true))
         assert(!PiJobTracker.shouldSpeakProgress(elapsed: 19, changed: false))
-        assert(PiJobTracker.shouldSpeakProgress(elapsed: 20, changed: false))
+        assert(!PiJobTracker.shouldSpeakProgress(elapsed: 20, changed: false))
+        assert(!PiJobTracker.shouldSpeakProgress(elapsed: 60, changed: false))
+        let status = PiJobTracker.statusChannel(note: "Pi is reading files")
+        assert(status.hasPrefix("[STATUS] Pi is reading files."))
+        assert(status.contains("do not speak it"))
+        assert(status.contains("This is not the user."))
+        assert(PiJobTracker.statusChannel(note: "  ").contains("Pi is still working"))
+        assert(PiJobTracker.failureChannel(reason: "no answer").contains("The task failed: no answer"))
+        let done = PiJobTracker.finalChannel(excerpt: "It compiled.", outcome: .done)
+        assert(done.hasPrefix("[FINAL] Pi finished."))
+        assert(done.contains("It compiled."))
+        let partial = PiJobTracker.finalChannel(excerpt: "halfway", outcome: .stopped)
+        assert(partial.contains("incomplete task (stopped)"))
+        assert(!partial.contains("pi_results"))
         print("Native runtime checks passed: playback, cancellation, tool definitions, transcript revisions, headless bridge, pi jobs, conversation history")
     }
 
@@ -357,7 +391,7 @@ struct RuntimeTests {
 
         // Wire contract (out): work
         emitted.removeAll()
-        backend.onAskPi?("call-1", "check system status")
+        backend.onSpawnThinking?("call-1", "check system status")
         assert(emitted.count == 1, "work event emitted")
         assert((emitted[0]["type"] as? String) == "work")
         assert((emitted[0]["id"] as? String) == "call-1")
@@ -417,7 +451,7 @@ struct RuntimeTests {
 
         // Wire contract (out): stop_work
         emitted.removeAll()
-        backend.onStopPi?()
+        backend.onStopThinking?()
         assert(emitted.count == 1, "stop_work event emitted")
         assert((emitted[0]["type"] as? String) == "stop_work")
 
@@ -434,6 +468,47 @@ struct RuntimeTests {
         backend.onUserFinal?("hello again", "item-reattach")
         assert(emitted.count == 1, "reattached bridge must emit exactly one heard event")
         assert((emitted[0]["type"] as? String) == "heard")
+    }
+
+    @MainActor
+    static func testStartFailureReachesBridge() async {
+        assert(LocalServiceStarter.lastError(inLogText: "Starting...\nError: chatbot is not installed. Run: uv sync\n")
+            == "chatbot is not installed. Run: uv sync")
+        assert(LocalServiceStarter.lastError(inLogText: "Error: port 8766 is other.\n") == "port 8766 is other")
+        assert(LocalServiceStarter.lastError(inLogText: "Starting...\nVoice backend on port 8766.\n") == nil)
+
+        // A start() that throws (the local service never came up) must emit
+        // `error`, or Pi stays on "connecting" forever.
+        struct Boom: LocalizedError { var errorDescription: String? { "Local service startup failed." } }
+        let backend = MockVoiceBackend()
+        backend.startError = Boom()
+        let session = SessionController(backend: backend)
+        let bridge = HeadlessBridge()
+        var emitted = [[String: Any]]()
+        bridge.emitSink = { emitted.append($0) }
+        bridge.attach(session: session, listenToStdin: false)
+        await session.begin()
+        let errors = emitted.filter { ($0["type"] as? String) == "error" }
+        assert(errors.count == 1, "start failure emits exactly one error event")
+        assert((errors.first?["message"] as? String) == "Local service startup failed.")
+        assert(!emitted.contains { ($0["type"] as? String) == "ready" })
+        assert(session.state == .failed("Local service startup failed."))
+
+        // A backend that already reported its failure is not reported twice.
+        let reporting = MockVoiceBackend()
+        reporting.startError = Boom()
+        let reportingSession = SessionController(backend: reporting)
+        let reportingBridge = HeadlessBridge()
+        var reported = [[String: Any]]()
+        reportingBridge.emitSink = { reported.append($0) }
+        reportingBridge.attach(session: reportingSession, listenToStdin: false)
+        let original = reporting.onState
+        reporting.onState = { state in
+            original?(state)
+            if state == .connecting { original?(.failed("Local service startup failed.")) }
+        }
+        await reportingSession.begin()
+        assert(reported.filter { ($0["type"] as? String) == "error" }.count == 1, "no duplicate error event")
     }
 
     @MainActor
@@ -576,6 +651,56 @@ struct RuntimeTests {
         assert(lastFailed?["outcome"] as? String == "failed", "Luna must see failure, not idle")
         assert((lastFailed?["detail"] as? String) == "Pi finished with no answer")
         assert(((lastFailed?["brief"] as? String) ?? "").contains("doomed errand"))
+
+        // A second handoff during an active job steers it; the ack says so and
+        // never reads like a second job lining up behind the first.
+        let fresh = PiJobTracker.handoffAck(id: "a1", steering: false)
+        assert((fresh["status"] as? String) == "started")
+        assert((fresh["id"] as? String) == "a1")
+        let steer = PiJobTracker.handoffAck(id: "a2", steering: true)
+        assert((steer["status"] as? String) == "steering")
+        assert((steer["id"] as? String) == "a2")
+        let steerNote = (steer["note"] as? String) ?? ""
+        assert(steerNote.hasPrefix("This was sent to steer the current Pi task."), steerNote)
+        assert(steerNote.contains("the earlier task is replaced"))
+        assert(steerNote.contains("Okay, I've redirected Pi to that instead."))
+        for ack in [fresh, steer] {
+            let text = ack.values.compactMap { $0 as? String }.joined(separator: " ").lowercased()
+            for banned in ["queue", "after that", "next", "waiting"] {
+                assert(!text.contains(banned), "handoff ack must not say \(banned): \(text)")
+            }
+        }
+        // A near-identical brief right after the job starts is a repeat: it is
+        // answered without steering, so Pi's in-flight search is not thrown away.
+        var repeats = PiJobTracker()
+        repeats.ask(id: "r1", brief: "Search the web for the latest AI news from today.", now: t0)
+        assert(repeats.activeRepeat(of: "search the web for the latest AI news from today", now: t0.addingTimeInterval(8)) == "r1")
+        assert(repeats.activeRepeat(of: "Please search the web for latest AI news today", now: t0.addingTimeInterval(8)) == "r1")
+        assert(repeats.activeRepeat(of: "Search the web for the latest area news from today.", now: t0.addingTimeInterval(8)) == nil,
+               "a word that changes the task still steers")
+        assert(repeats.activeRepeat(of: "Check the weather in Calgary", now: t0.addingTimeInterval(8)) == nil)
+        assert(repeats.activeRepeat(of: "Search the web for the latest AI news from today with sources", now: t0.addingTimeInterval(8)) == nil,
+               "an added requirement still steers")
+        assert(repeats.activeRepeat(of: "Search the web for the latest AI news from today.", now: t0.addingTimeInterval(31)) == nil,
+               "after the window a repeat is a deliberate redo")
+        assert(repeats.activeRepeat(of: "", now: t0.addingTimeInterval(1)) == nil)
+        repeats.update(id: "r1", state: .done, note: nil, now: t0.addingTimeInterval(2))
+        assert(repeats.activeRepeat(of: "Search the web for the latest AI news from today.", now: t0.addingTimeInterval(3)) == nil,
+               "a finished job is not repeated, it is asked again")
+        let repeatAck = PiJobTracker.repeatAck(id: "r1")
+        assert((repeatAck["status"] as? String) == "already_working")
+        assert((repeatAck["id"] as? String) == "r1")
+        let repeatText = repeatAck.values.compactMap { $0 as? String }.joined(separator: " ").lowercased()
+        assert(repeatText.contains("nothing was sent"))
+        for banned in ["queue", "after that", "next", "waiting", "redirected"] {
+            assert(!repeatText.contains(banned), "repeat ack must not say \(banned): \(repeatText)")
+        }
+
+        var steering = PiJobTracker()
+        steering.ask(id: "s1", brief: "search for FIXME", now: t0)
+        assert(steering.hasActive, "a running job means the next handoff steers")
+        steering.update(id: "s1", state: .superseded, note: "Task updated; Pi continues", now: t0)
+        assert(!steering.hasActive)
 
         // Human elapsed.
         assert(PiJobTracker.elapsedString(since: t0, now: t0.addingTimeInterval(9)) == "9s")

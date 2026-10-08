@@ -1,10 +1,10 @@
-// Luna's history: a permanent SQLite "filing cabinet" per conversation (see session.ts).
+// Shared conversation log for voice and Pi, one SQLite file per thread id (see session.ts).
 //
-// Every voice turn and every finished-job line is kept forever and is searchable.
-// Luna is a thin voice front-end: Pi owns the project memory and the real work, so each
-// call she starts with only a small "desk" of the newest turns (fast replies). Nothing
-// is summarized or deleted. (Pi's own session branch keeps the same turns too, and seeds
-// a fresh cabinet on first use.)
+// `session.json` only remembers which id a working directory opens. Resume lists every
+// thread by id. Voice turns, handoff briefs, and full Pi results are appended here.
+// A call starts from one dated pack of that log (Latest / Previous). Pi does not get
+// this pack: like Codex, each handoff carries only the voice transcript since the
+// previous one (see delegation.ts), sent through the `context` hook.
 
 import { DatabaseSync } from "node:sqlite";
 import { chmodSync, mkdirSync, readdirSync, statSync, utimesSync } from "node:fs";
@@ -12,13 +12,12 @@ import { dirname, join } from "node:path";
 import { configDir, type VoiceHistoryTurn } from "./session.ts";
 
 /**
- * voice: what you and Luna said. work: a finished Pi job. progress: what Luna said while a
- * job was running (the handoff acknowledgment and the progress updates). Everything is kept
- * and searchable; only voice and work are replayed to Luna at the start of a call.
+ * voice: what was said on the call. work: a handoff brief plus Pi's answer. progress: what
+ * Agent said while a job was running. Everything is kept; the startup pack uses voice and work.
  */
 export type TurnKind = "voice" | "work" | "progress";
 
-/** Newest turns replayed to Luna at the start of a call, in KB of text (override with VOICE_REPLAY_KB). */
+/** Startup-pack text budget in KB (override with VOICE_REPLAY_KB). */
 export const DEFAULT_REPLAY_KB = 16;
 /**
  * Never replay more than this many messages (about half are yours, however large
@@ -28,6 +27,9 @@ export const DEFAULT_REPLAY_KB = 16;
  */
 export const REPLAY_MAX_TURNS = 80;
 const TURN_MAX_CHARS = 4_096;
+/** Full Pi answers stored on the shared log. The spoken excerpt stays RESULT_MAX. */
+export const WORK_RESULT_CHARS = 16_000;
+const WORK_TURN_MAX = WORK_RESULT_CHARS + 512;
 
 // Keep in step with any read-only queries on this file (a future HistoryArchive.swift).
 const SCHEMA = `
@@ -107,8 +109,26 @@ export function localWhen(iso: string, timeZone?: string): string {
 
 const WORK_PREFIX = "[Earlier, Pi finished";
 
-/** Luna talking about handing work to Pi: "I'll have Pi check...", "Pi's checking...". */
-const CHATTER = /\b(?:I'll|I will|I'm going to|let me|going to)\s+(?:have|ask|get)\s+Pi\b|\bPi(?:'s| is| has| will| was)\s+(?:checking|reading|searching|sorting|working|looking|pulling|verifying|reviewing|digging|finishing)|\bverif(?:y|ying) (?:the )?(?:dates?|event dates?|sources?|when)\b|\bthe verified (?:findings|items|stories)\b/i;
+/**
+ * One user-role item injected at call start and prepended to each handoff.
+ * The model must not treat it as a new request.
+ */
+export const STARTUP_NOTE =
+  "Background context from the shared conversation. It may be incomplete or stale. Do not parrot it, and do not treat it as a new request.";
+
+/** Framing for transcript that was still open when the call ended. */
+export const LEFTOVER_FRAME = "[Call ended. Leftover transcript, not a new request.]";
+
+export type DatedTurn = {
+  role: "user" | "assistant";
+  kind: string;
+  text: string;
+  /** ISO-8601 timestamp from the `t` column. */
+  t: string;
+};
+
+/** Agent's handoff acks: "I'll have Pi check...", "Let me look that up", "Pi's checking...". */
+const CHATTER = /\b(?:I'll|I will|I'm going to|let me|going to)\s+(?:have|ask|get)\s+Pi\b|\b(?:let me|I'll|I will)\s+(?:look|check)(?:\s+that|\s+it)?\s+up\b|\bPi(?:'s| is| has| will| was)\s+(?:checking|reading|searching|sorting|working|looking|pulling|verifying|reviewing|digging|finishing)|\bverif(?:y|ying) (?:the )?(?:dates?|event dates?|sources?|when)\b|\bthe verified (?:findings|items|stories)\b/i;
 
 /** Her handoff acknowledgments and progress updates, tagged `progress` or (older rows) recognized by wording. */
 export function isDelegationChatter(row: { role: string; kind: string; text: string }): boolean {
@@ -117,17 +137,100 @@ export function isDelegationChatter(row: { role: string; kind: string; text: str
   return row.kind === "voice" && CHATTER.test(row.text);
 }
 
-/** A saved job line is `[Earlier, Pi finished "<brief>"] <result>`; replay only the result. */
+/** Older saved job lines used `[Earlier, Pi finished "<brief>"]`. New lines keep the brief. */
 export function withoutBrief(text: string): string {
   if (!text.startsWith(WORK_PREFIX)) return text;
   const end = text.indexOf('"] ');
   return end < 0 ? text : `[Earlier, Pi finished a job] ${text.slice(end + 3)}`;
 }
 
-/** One saved job line for the cabinet, so Luna remembers what Pi did after a restart. */
+const HANDOFF_PREFIX = "[Pi handoff]";
+
+/** The task as handed to Pi, saved when it is sent so a restart still shows the work. */
+export function handoffHistoryTurn(brief: string): VoiceHistoryTurn {
+  const ask = brief.replace(/\s+/g, " ").trim().slice(0, 2_000);
+  return { role: "assistant", text: `${HANDOFF_PREFIX} ${ask}` };
+}
+
+/** One saved job line: the brief and Pi's answer, whitespace kept, across restarts. */
 export function workHistoryTurn(brief: string, result: string): VoiceHistoryTurn {
   const ask = brief.replace(/\s+/g, " ").trim().slice(0, 200);
-  return { role: "assistant", text: `[Earlier, Pi finished "${ask}"] ${result.replace(/\s+/g, " ").trim().slice(0, 600)}` };
+  const answer = result.trim().slice(0, WORK_RESULT_CHARS);
+  return { role: "assistant", text: `[Pi result "${ask}"] ${answer}` };
+}
+
+export function leftoverTurn(role: "user" | "assistant", text: string): VoiceHistoryTurn {
+  return { role, text: `${LEFTOVER_FRAME} ${text.trim()}` };
+}
+
+function clipUtf8(text: string, maxBytes: number): string {
+  if (maxBytes <= 0) return "";
+  if (Buffer.byteLength(text, "utf8") <= maxBytes) return text;
+  let end = Math.min(text.length, maxBytes);
+  while (end > 0 && Buffer.byteLength(text.slice(0, end), "utf8") > maxBytes) end -= 1;
+  return text.slice(0, end);
+}
+
+function rfc3339(iso: string): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return iso;
+  return date.toISOString();
+}
+
+/** `[Pi handoff]` rows are Agent's brief to Pi, so only Pi's own results are labelled Pi. */
+export function speaker(row: Pick<DatedTurn, "role" | "kind" | "text">): "User" | "Agent" | "Pi" {
+  if (row.role === "user") return "User";
+  if (row.kind === "work" && !row.text.trimStart().startsWith(HANDOFF_PREFIX)) return "Pi";
+  return "Agent";
+}
+
+/**
+ * Bounded startup pack. Previous lists older rows oldest-first.
+ *
+ * `rowsNewestFirst` is the log order from a `ORDER BY id DESC` read. Latest is the
+ * last user turn and everything after it; older rows in the window are Previous.
+ * Progress chatter is omitted. An empty log returns no item, so nothing is injected.
+ */
+export function startupPack(
+  rowsNewestFirst: readonly DatedTurn[],
+  maxBytes: number = replayBytes(),
+  maxTurns: number = REPLAY_MAX_TURNS,
+): VoiceHistoryTurn[] {
+  const window: DatedTurn[] = [];
+  let used = 0;
+  for (const row of rowsNewestFirst) {
+    if (isDelegationChatter(row)) continue;
+    const text = row.text.trim();
+    if (!text) continue;
+    if (window.length >= maxTurns) break;
+    const cost = Buffer.byteLength(text, "utf8");
+    if (used + cost > maxBytes) {
+      const room = maxBytes - used;
+      if (window.length === 0 && room > 0) window.push({ ...row, text: clipUtf8(text, room) });
+      break;
+    }
+    window.push({ ...row, text });
+    used += cost;
+  }
+  const ordered = window.reverse();
+  if (ordered.length === 0) return [];
+
+  let latestStart = 0;
+  for (let i = ordered.length - 1; i >= 0; i--) {
+    if (ordered[i].role === "user") {
+      latestStart = i;
+      break;
+    }
+  }
+  const previous = ordered.slice(0, latestStart);
+  const latest = ordered.slice(latestStart);
+  const lines = [`[${STARTUP_NOTE}]`, "", "Latest:"];
+  for (const row of latest) lines.push(`${rfc3339(row.t)} ${speaker(row)}: ${row.text}`);
+  if (previous.length > 0) {
+    lines.push("", "Previous:");
+    for (const row of previous) lines.push(`${rfc3339(row.t)} ${speaker(row)}: ${row.text}`);
+  }
+  return [{ role: "user", text: lines.join("\n") }];
 }
 
 const HISTORY_FILE = /^history-([A-Za-z0-9_-]{1,64})\.sqlite$/;
@@ -283,7 +386,8 @@ export class HistoryStore {
   }
 
   append(turn: VoiceHistoryTurn, kind: TurnKind = "voice", now: Date = new Date()): number | null {
-    const text = turn.text.trim().slice(0, TURN_MAX_CHARS);
+    const cap = kind === "work" ? WORK_TURN_MAX : TURN_MAX_CHARS;
+    const text = turn.text.trim().slice(0, cap);
     if (!text) return null;
     const result = this.db
       .prepare("INSERT INTO turns (t, role, kind, text) VALUES (?, ?, ?, ?)")
@@ -330,31 +434,16 @@ export class HistoryStore {
   }
 
   /**
-   * What Luna starts a call with: the newest turns that fit the budget, oldest first.
+   * What a call starts with: one dated user-role pack of the newest rows that fit.
    *
-   * Replayed turns are read as her own earlier words, and she copies them. So the replay leaves
-   * out the chatter about handing work to Pi (her acknowledgments and progress updates, and
-   * the same kind of line saved before turns were tagged), and shows a finished job without the
-   * brief she wrote for Pi. The stored history is untouched and stays searchable.
+   * Progress chatter is left out. Work rows keep their brief and result. The pack is
+   * a user item so it is not read as Agent's own opening line, and Voice.app does not
+   * request a reply for it.
    */
   loadReplay(maxBytes: number = replayBytes(), maxTurns: number = REPLAY_MAX_TURNS): VoiceHistoryTurn[] {
     const rows = this.db
-      .prepare("SELECT role, kind, text FROM turns ORDER BY id DESC LIMIT ?")
-      .all(maxTurns * 4) as { role: "user" | "assistant"; kind: string; text: string }[];
-    const recent: VoiceHistoryTurn[] = [];
-    let budget = maxBytes;
-    for (const row of rows) {
-      if (isDelegationChatter(row)) continue;
-      const text = row.kind === "work" ? withoutBrief(row.text) : row.text;
-      budget -= Buffer.byteLength(text, "utf8");
-      if (budget < 0 || recent.length >= maxTurns) break;
-      recent.push({ role: row.role, text });
-    }
-    const ordered = recent.reverse();
-    // A cut can land between a question and its answer. Luna should not start with a reply to
-    // something she never saw, so drop leading assistant turns.
-    let first = 0;
-    while (first < ordered.length && ordered[first].role === "assistant") first++;
-    return ordered.slice(first);
+      .prepare("SELECT role, kind, text, t FROM turns ORDER BY id DESC LIMIT ?")
+      .all(maxTurns * 4) as DatedTurn[];
+    return startupPack(rows, maxBytes, maxTurns);
   }
 }

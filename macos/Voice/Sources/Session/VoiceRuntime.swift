@@ -9,6 +9,49 @@ enum VoiceToolFollowUp {
     static func shouldSend(pendingTools: Int, responseActive: Bool) -> Bool {
         pendingTools == 0 && !responseActive
     }
+
+    /// `spawn_thinking` and `stop_thinking` are fire-and-forget: nothing asks
+    /// the model to continue after them. The model is told to say a short line
+    /// with the call, but in practice it emits the call alone, so asking for
+    /// work was answered with silence. When a finished response carried one of
+    /// them and spoke nothing, ask once more so Agent acknowledges it. Never
+    /// when it already spoke (that would say it twice) or was cancelled, and
+    /// not while muted: the extension drops a muted handoff, so "on it" would
+    /// promise work that never starts.
+    static func shouldAcknowledgeHandoff(handoffCalled: Bool, spokenText: String, cancelled: Bool, muted: Bool = false) -> Bool {
+        handoffCalled && !cancelled && !muted && spokenText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+}
+
+/// When Pi's `[FINAL]` / failure context must wait instead of going out now.
+///
+/// After a spoken turn is transcribed, the server answers it implicitly, but
+/// announces `response.created` only with the first output, seconds later.
+/// An item sent in that window lands in the chat *before* the reply the
+/// server is already generating, and a `response.create` sent with it runs
+/// after that reply, so the conversation ends on an assistant message. Claude
+/// rejects that ("does not support assistant message prefill"), and the Pi
+/// result was never spoken (seen live: a result landed while the user talked).
+/// Hold it until the turn's `response.done`, with a cap so a turn the server
+/// drops silently cannot strand it.
+enum VoiceContextHold {
+    static let maxHold: TimeInterval = 15
+
+    static func shouldHold(implicitTurnSince: Date?, now: Date = Date()) -> Bool {
+        guard let since = implicitTurnSince else { return false }
+        return now.timeIntervalSince(since) < maxHold
+    }
+}
+
+/// The server's `error` events name their kind in `error.type`
+/// (`build_error_event`) and leave `code` null. Matching only `code` turned
+/// every `turn_ignored` (an empty transcript) into a request failure that Pi
+/// showed as "Error: Turn ignored (no_text) Your message is saved".
+enum VoiceServerError {
+    static func kind(_ error: [String: Any]) -> String {
+        if let code = error["code"] as? String, !code.isEmpty { return code }
+        return error["type"] as? String ?? ""
+    }
 }
 
 /// When `speech_started` may steal the panel.

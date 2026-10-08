@@ -168,11 +168,27 @@ final class LocalServiceStarter {
             if await probe() == .ready { return }
             if let child = launcher, !child.isRunning {
                 if await probe() == .ready { return }
-                throw StartupError("Local service startup failed. Check /tmp/voice-service-startup.log and /tmp/chatbot-server.log.")
+                let reason = Self.lastError(inLog: "/tmp/voice-service-startup.log").map { ": \($0)" } ?? ""
+                throw StartupError("Local service startup failed\(reason). Check /tmp/voice-service-startup.log and /tmp/chatbot-server.log.")
             }
             try await Task.sleep(nanoseconds: 200_000_000)
         }
         throw StartupError("The local service is still starting. Check /tmp/chatbot-server.log, then try again.")
+    }
+
+    /// The launcher's last `Error: ...` line, so a failed start says why
+    /// (for example a checkout that still needs `uv sync`).
+    static func lastError(inLog path: String) -> String? {
+        guard let text = try? String(contentsOfFile: path, encoding: .utf8) else { return nil }
+        return lastError(inLogText: text)
+    }
+
+    static func lastError(inLogText text: String) -> String? {
+        guard let line = text.split(whereSeparator: \.isNewline)
+            .map({ $0.trimmingCharacters(in: .whitespaces) })
+            .last(where: { $0.hasPrefix("Error:") }) else { return nil }
+        let message = line.dropFirst("Error:".count).trimmingCharacters(in: CharacterSet(charactersIn: " ."))
+        return message.isEmpty ? nil : message
     }
 
     private func repositoryRoot() throws -> String {

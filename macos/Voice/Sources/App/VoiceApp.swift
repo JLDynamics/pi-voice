@@ -6,7 +6,7 @@ import Foundation
 ///
 /// The SwiftUI panel (orb, transcript, settings, saved chats) was removed once
 /// Pi became the only way in — it was ~1800 lines that no longer ran. The
-/// `--headless` argument selects headless tools (ask_pi, stop_pi) in
+/// `--headless` argument selects headless tools (spawn_thinking, stop_thinking) in
 /// LiveVoiceBackend and identifies Voice processes for orphan reaping.
 @main
 enum VoiceMain {
@@ -26,6 +26,7 @@ enum VoiceMain {
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let session: SessionController
+    private var signalSources: [DispatchSourceSignal] = []
 
     private static let defaultWSURL = LocalService.voiceWebSocket
 
@@ -54,11 +55,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             })
         }
         unsetenv("VOICE_HISTORY")
+        stopLauncherOnSignals()
         // No Dock icon and no menu bar presence: this is a background audio bridge.
         NSApp.setActivationPolicy(.accessory)
         HeadlessBridge.shared.attach(session: session)
         if !session.isLive {
             session.toggleSession()
+        }
+    }
+
+    /// Pi escalates a slow `quit` to SIGTERM, and orphan reaping sends SIGTERM.
+    /// The default action killed Voice without `applicationWillTerminate`, so the
+    /// `run-browser.sh` it started (and the backend on :8766) kept running with
+    /// no owner. Route those signals through the normal terminate path.
+    private func stopLauncherOnSignals() {
+        for sig in [SIGTERM, SIGINT, SIGHUP] {
+            signal(sig, SIG_IGN)
+            let source = DispatchSource.makeSignalSource(signal: sig, queue: .main)
+            source.setEventHandler {
+                LocalServiceStarter.shared.stop()
+                NSApp.terminate(nil)
+            }
+            source.resume()
+            signalSources.append(source)
         }
     }
 

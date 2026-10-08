@@ -5,8 +5,8 @@ import Foundation
 @MainActor
 protocol HeadlessBackend: AnyObject {
     var onSpoken: ((String) -> Void)? { get set }
-    var onAskPi: ((String, String) -> Void)? { get set }
-    var onStopPi: (() -> Void)? { get set }
+    var onSpawnThinking: ((String, String) -> Void)? { get set }
+    var onStopThinking: (() -> Void)? { get set }
     func ingestUserText(_ text: String)
     func postResult(id: String, speak: String, full: String)
     func updatePiJob(id: String, status: String, note: String?)
@@ -66,10 +66,10 @@ final class HeadlessBridge {
             self.spokenItemId = nil
             self.emit(["type": "spoken", "text": text, "item_id": id])
         }
-        session.onAskPi = { [weak self] id, brief in
+        session.onSpawnThinking = { [weak self] id, brief in
             self?.emit(["type": "work", "id": id, "brief": brief])
         }
-        session.onStopPi = { [weak self] in
+        session.onStopThinking = { [weak self] in
             self?.emit(["type": "stop_work"])
         }
 
