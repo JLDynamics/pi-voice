@@ -332,6 +332,9 @@ final class LiveVoiceBackend: VoiceBackend, HeadlessBackend {
     }
 
     private func appendPiJournal(_ line: String) {
+        // Same line in Voice's stderr log, so one job id finds the handoff in
+        // the journal, in this log, and in the extension's lines beside it.
+        NSLog("[PiJob] %@", line)
         PiJobTracker.appendJournal(directory: PiJobTracker.journalDirectory(), line: line)
     }
 
