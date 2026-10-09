@@ -115,6 +115,7 @@ struct RuntimeTests {
         testTranscript()
         testIdleChromeKeepsMute()
         testHeadlessBridge()
+        testContract()
         await testSessionConversationHistory()
         await testStartFailureReachesBridge()
         await testAudioIOProbe()
@@ -469,6 +470,281 @@ struct RuntimeTests {
         backend.onUserFinal?("hello again", "item-reattach")
         check(emitted.count == 1, "reattached bridge must emit exactly one heard event")
         check((emitted[0]["type"] as? String) == "heard")
+    }
+
+    @MainActor
+    static func testContract() {
+        let thisFile = URL(fileURLWithPath: #filePath)
+        let candidates = [
+            thisFile.deletingLastPathComponent().appendingPathComponent("../../../contracts/pi-voice.json").standardized,
+            thisFile.deletingLastPathComponent().appendingPathComponent("../../contracts/pi-voice.json").standardized,
+        ]
+        let contractURL = candidates.first(where: { FileManager.default.fileExists(atPath: $0.path) }) ?? candidates[0]
+        guard let data = try? Data(contentsOf: contractURL),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let rawEnums = json["enums"] as? [String: Any],
+              let stdio = json["stdio"] as? [String: Any],
+              let rawToVoice = stdio["toVoice"] as? [String: Any],
+              let rawFromVoice = stdio["fromVoice"] as? [String: Any],
+              let voiceHistory = json["voiceHistory"] as? [String: Any],
+              let rawTools = json["tools"] as? [String: Any],
+              let rawChannels = json["channels"] as? [String: Any]
+        else {
+            check(false, "Failed to load contracts/pi-voice.json at \(contractURL.path)")
+            return
+        }
+
+        var enums: [String: [String]] = [:]
+        for (k, v) in rawEnums where !k.hasPrefix("_") {
+            if let arr = v as? [String] { enums[k] = arr }
+        }
+
+        var toVoiceSchema: [String: [String: String]] = [:]
+        for (k, v) in rawToVoice where !k.hasPrefix("_") {
+            if let dict = v as? [String: String] { toVoiceSchema[k] = dict }
+        }
+
+        var fromVoiceSchema: [String: [String: String]] = [:]
+        for (k, v) in rawFromVoice where !k.hasPrefix("_") {
+            if let dict = v as? [String: String] { fromVoiceSchema[k] = dict }
+        }
+
+        var tools: [String: [String: String]] = [:]
+        for (k, v) in rawTools where !k.hasPrefix("_") {
+            if let dict = v as? [String: String] { tools[k] = dict }
+        }
+
+        var channels: [String: String] = [:]
+        for (k, v) in rawChannels where !k.hasPrefix("_") {
+            if let str = v as? String { channels[k] = str }
+        }
+
+        func sampleValues(fieldName: String, typeDef: String) -> [Any] {
+            let isOptional = typeDef.hasSuffix("?")
+            let baseType = isOptional ? String(typeDef.dropLast()) : typeDef
+            if baseType == "string" {
+                return ["sample-\(fieldName)"]
+            } else if baseType == "boolean" {
+                return [true, false]
+            } else if let enumVals = enums[baseType] {
+                return enumVals
+            }
+            check(false, "Unknown typeDef '\(typeDef)' for field '\(fieldName)'")
+            return []
+        }
+
+        func generateSamples(schema: [String: String]) -> [[String: Any]] {
+            if schema.isEmpty { return [[:]] }
+            var results: [[String: Any]] = [[:]]
+            for (key, typeDef) in schema {
+                let isOptional = typeDef.hasSuffix("?")
+                let vals = sampleValues(fieldName: key, typeDef: typeDef)
+                var next: [[String: Any]] = []
+                for obj in results {
+                    if isOptional {
+                        next.append(obj)
+                    }
+                    for val in vals {
+                        var copy = obj
+                        copy[key] = val
+                        next.append(copy)
+                    }
+                }
+                results = next
+            }
+            return results
+        }
+
+        // 1. Every toVoice sample through HeadlessBridge.handle(line:) with MockVoiceBackend + SessionController
+        let backend = MockVoiceBackend()
+        let session = SessionController(backend: backend)
+        backend.onState?(.listening)
+
+        let bridge = HeadlessBridge()
+        bridge.emitSink = { _ in }
+        var stopServiceCount = 0
+        var terminateCount = 0
+        bridge.onStopService = { stopServiceCount += 1 }
+        bridge.onTerminate = { terminateCount += 1 }
+        bridge.attach(session: session, listenToStdin: false)
+
+        let orderedMessageTypes = toVoiceSchema.keys.filter { $0 != "quit" } + (toVoiceSchema.keys.contains("quit") ? ["quit"] : [])
+        for msgType in orderedMessageTypes {
+            guard let schema = toVoiceSchema[msgType] else { continue }
+            let samples = generateSamples(schema: schema)
+            check(!samples.isEmpty, "No samples generated for toVoice \(msgType)")
+            for sample in samples {
+                backend.onState?(.listening)
+                var payload: [String: Any] = sample
+                payload["type"] = msgType
+                let lineData = try! JSONSerialization.data(withJSONObject: payload)
+                let priorInterrupts = backend.interruptCount
+                bridge.handle(line: lineData)
+
+                switch msgType {
+                case "user":
+                    let text = sample["text"] as? String ?? ""
+                    check(backend.ingestedUserText.contains(text), "backend must ingest user text: \(text)")
+                case "mute":
+                    let muted = sample["muted"] as? Bool ?? false
+                    check(backend.mutedCalls.contains(muted), "backend must record setMuted(\(muted))")
+                case "interrupt":
+                    check(backend.interruptCount > priorInterrupts, "backend must record interrupt")
+                case "result":
+                    let id = sample["id"] as? String ?? ""
+                    let speak = sample["speak"] as? String ?? ""
+                    let full = sample["full"] as? String ?? ""
+                    check(backend.postedResults.contains { $0.id == id && $0.speak == speak && $0.full == full },
+                          "backend must record result with id=\(id) speak=\(speak) full=\(full)")
+                case "job_update":
+                    let id = sample["id"] as? String ?? ""
+                    let status = sample["status"] as? String ?? ""
+                    let note = sample["note"] as? String
+                    check(backend.piJobUpdates.contains { $0.id == id && $0.status == status && $0.note == note },
+                          "backend must record job_update with id=\(id) status=\(status) note=\(String(describing: note))")
+                case "quit":
+                    check(terminateCount > 0, "quit must call onTerminate")
+                    check(stopServiceCount > 0, "quit must call onStopService")
+                default:
+                    check(false, "Unrecognized toVoice message type: \(msgType)")
+                }
+            }
+        }
+
+        // Explicit check for jobStatus enum coverage in piJobUpdates
+        if let jobStatuses = enums["jobStatus"] {
+            for status in jobStatuses {
+                check(backend.piJobUpdates.contains { $0.status == status },
+                      "backend.piJobUpdates missing update for jobStatus '\(status)'")
+            }
+        }
+        check(backend.mutedCalls.contains(true) && backend.mutedCalls.contains(false),
+              "backend.mutedCalls must contain both true and false")
+
+        // 2. Every bridge emission seen while firing each backend callback
+        let emitBackend = MockVoiceBackend()
+        let emitSession = SessionController(backend: emitBackend)
+        let emitBridge = HeadlessBridge()
+        var emitted: [[String: Any]] = []
+        emitBridge.emitSink = { emitted.append($0) }
+        emitBridge.attach(session: emitSession, listenToStdin: false)
+
+        emitBackend.onState?(.listening)
+        emitBackend.onState?(.failed("contract-test-error"))
+        emitBackend.onRequestError?("contract-req-error")
+        emitBackend.onUserSpeechStarted?()
+        emitBackend.onUserFinal?("sample-heard-text", "sample-item-1")
+        emitBackend.onAgentDelta?("sample-delta-text")
+        emitBackend.onSpoken?("sample-spoken-text")
+        emitBackend.onAgentDone?()
+        emitBackend.onSpawnThinking?("sample-work-id", "sample-work-brief")
+        emitBackend.onStopThinking?()
+
+        var emittedTypes = Set<String>()
+        for obj in emitted {
+            guard let type = obj["type"] as? String else {
+                check(false, "Bridge emitted object without 'type': \(obj)")
+                continue
+            }
+            emittedTypes.insert(type)
+            guard let schema = fromVoiceSchema[type] else {
+                check(false, "Bridge emitted type '\(type)' not in contract stdio.fromVoice")
+                continue
+            }
+            var expectedKeys = Set(schema.keys)
+            expectedKeys.insert("type")
+            let actualKeys = Set(obj.keys)
+            check(actualKeys == expectedKeys,
+                  "Emitted keys for '\(type)' do not match contract. Expected \(expectedKeys), got \(actualKeys)")
+        }
+
+        for contractType in fromVoiceSchema.keys {
+            check(emittedTypes.contains(contractType),
+                  "Contract fromVoice type '\(contractType)' was never emitted by bridge")
+        }
+
+        // 3. PiJobTracker.State raw values equal enums.jobStatus
+        if let jobStatuses = enums["jobStatus"] {
+            for status in jobStatuses {
+                check(PiJobTracker.State(rawValue: status) != nil,
+                      "PiJobTracker.State missing case for contract status '\(status)'")
+            }
+            let allCases: [PiJobTracker.State] = [
+                .queued, .working, .done, .stopped, .superseded, .dropped, .failed
+            ]
+            check(allCases.count == jobStatuses.count,
+                  "PiJobTracker.State known case count (\(allCases.count)) != contract jobStatus count (\(jobStatuses.count))")
+            for c in allCases {
+                check(jobStatuses.contains(c.rawValue),
+                      "PiJobTracker.State case '\(c.rawValue)' not in contract enums.jobStatus")
+            }
+        } else {
+            check(false, "Contract missing enums.jobStatus")
+        }
+
+        // 4. VoiceHistoryEnv.variable equals voiceHistory.env and parse keeps sample built from voiceHistory.turn
+        if let envVar = voiceHistory["env"] as? String,
+           let turnSchema = voiceHistory["turn"] as? [String: String]
+        {
+            check(VoiceHistoryEnv.variable == envVar,
+                  "VoiceHistoryEnv.variable '\(VoiceHistoryEnv.variable)' != contract '\(envVar)'")
+            let turnSamples = generateSamples(schema: turnSchema)
+            check(!turnSamples.isEmpty, "No turn samples generated for voiceHistory.turn")
+            for turnSample in turnSamples {
+                let jsonArrayData = try! JSONSerialization.data(withJSONObject: [turnSample])
+                let jsonString = String(data: jsonArrayData, encoding: .utf8)
+                let parsedTurns = VoiceHistoryEnv.parse(jsonString)
+                check(parsedTurns.count == 1, "VoiceHistoryEnv.parse must keep sample turn")
+                check(parsedTurns[0].role == turnSample["role"] as? String, "Turn role mismatch")
+                check(parsedTurns[0].text == turnSample["text"] as? String, "Turn text mismatch")
+            }
+        } else {
+            check(false, "Contract missing voiceHistory section")
+        }
+
+        // 5. HeadlessTools.definitions names equal tools keys with exactly contract argument keys, and spawnBrief reads contract argument
+        let defs = HeadlessTools.definitions
+        let defNames = Set(defs.compactMap { $0["name"] as? String })
+        let toolNames = Set(tools.keys)
+        check(defNames == toolNames, "HeadlessTools.definitions names (\(defNames)) != contract tools (\(toolNames))")
+
+        for def in defs {
+            guard let name = def["name"] as? String,
+                  let contractArgs = tools[name]
+            else { continue }
+            let params = def["parameters"] as? [String: Any]
+            let props = params?["properties"] as? [String: Any] ?? [:]
+            let actualArgKeys = Set(props.keys)
+            let expectedArgKeys = Set(contractArgs.keys)
+            check(actualArgKeys == expectedArgKeys,
+                  "Tool '\(name)' argument keys mismatch: expected \(expectedArgKeys), got \(actualArgKeys)")
+        }
+
+        let briefArg = tools["spawn_thinking"]?.keys.first ?? "brief"
+        let sampleBrief = "contract-brief-test-val"
+        let briefJsonData = try! JSONSerialization.data(withJSONObject: [briefArg: sampleBrief])
+        let briefJson = String(data: briefJsonData, encoding: .utf8)!
+        check(HeadlessTools.spawnBrief(briefJson) == sampleBrief,
+              "HeadlessTools.spawnBrief must read contract brief argument '\(briefArg)'")
+
+        // 6. PiJobTracker.statusChannel(note:) and finalChannel(excerpt:outcome:) start with channels.status and channels.final
+        if let statusTag = channels["status"],
+           let finalTag = channels["final"]
+        {
+            let statusResult = PiJobTracker.statusChannel(note: "testing progress")
+            check(statusResult.hasPrefix(statusTag),
+                  "statusChannel must start with '\(statusTag)': \(statusResult)")
+
+            let finalDone = PiJobTracker.finalChannel(excerpt: "finished task", outcome: .done)
+            check(finalDone.hasPrefix(finalTag),
+                  "finalChannel(.done) must start with '\(finalTag)': \(finalDone)")
+
+            let finalStopped = PiJobTracker.finalChannel(excerpt: "stopped task", outcome: .stopped)
+            check(finalStopped.hasPrefix(finalTag),
+                  "finalChannel(.stopped) must start with '\(finalTag)': \(finalStopped)")
+        } else {
+            check(false, "Contract missing channels.status or channels.final")
+        }
     }
 
     @MainActor
