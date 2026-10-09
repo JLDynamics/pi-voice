@@ -36,7 +36,8 @@ describe("withDelegations", () => {
   it("handles string content and leaves unrelated cases alone", () => {
     const visible = jobPrompt(asWork("w1"), asUser("check"));
     const map = new Map([[asWork("w1"), first]]);
-    assert.equal(withDelegations([{ role: "user", content: visible }], map)?.[0].content[0].text, `${first}\n\n[Pi voice job id: w1]`);
+    const textParts = (content: unknown) => content as { text: string }[];
+    assert.equal(textParts(withDelegations([{ role: "user", content: visible }], map)?.[0].content)[0].text, `${first}\n\n[Pi voice job id: w1]`);
     assert.equal(withDelegations([user(visible)], new Map([[asWork("other"), first]])), undefined);
     assert.equal(withDelegations([user(visible)], new Map()), undefined);
     // An assistant message quoting the id is not the job message.
