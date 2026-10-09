@@ -109,7 +109,7 @@ When `/voice` starts, the extension builds one user-role startup pack from the n
 
 In interactive mode, `/voice` stays in Pi's ordinary terminal transcript. Luna's spoken deltas update one visible custom entry in place; a hidden final entry saves the completed text for replay. Pi shows its own native tool calls and answers. The installed Pi 0.87.1 renderer is repaired by `scripts/patch-pi-native-fold.mjs` so voice tool calls and answers start folded and open on click, and the folded answer shows writing/ready state. The script checks the bundle hash and keeps a restore backup.
 
-Architecture & purity: `step()` / `handleCommand()` in `voice.ts` and `work.ts` are pure reducers returning `{state, effects}`; the `Voice` class applies effects to the Pi API; `child.ts` owns the child process and the lease file (`$TMPDIR/pi-voice.lease.json` or `tmpdir()`), which blocks a second Pi window from running voice concurrently and reaps orphaned `--headless` Voice processes. Keep new logic in the reducer so it stays testable.
+Architecture & purity: `step()` / `handleCommand()` in `voice.ts` (dispatching into `voice-lifecycle.ts`, `voice-transcript.ts`, `voice-job.ts`) and `work.ts` are pure reducers returning `{state, effects}`; the `Voice` class applies effects to the Pi API; `child.ts` owns the child process and the lease file (`$TMPDIR/pi-voice.lease.json` or `tmpdir()`), which blocks a second Pi window from running voice concurrently and reaps orphaned `--headless` Voice processes. Keep new logic in the reducer so it stays testable.
 
 ## Working in this checkout
 
