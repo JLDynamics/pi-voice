@@ -86,6 +86,7 @@ export class VoiceChild {
     const log = createWriteStream(stderrLogPath(pid), { flags: "a" });
     proc.stderr?.pipe(log);
     let leftover = "";
+    const ignoredReasons = new Set<string>();
     proc.stdout?.setEncoding("utf8");
     proc.stdout?.on("data", (chunk: string) => {
       leftover += chunk;
@@ -93,8 +94,13 @@ export class VoiceChild {
       while (nl >= 0) {
         const line = leftover.slice(0, nl);
         leftover = leftover.slice(nl + 1);
-        const event = parseLine(line);
-        if (event) onEvent(event);
+        const decoded = decodeLine(line);
+        if (!("ignored" in decoded)) onEvent(decoded);
+        else if (line.trim() && !ignoredReasons.has(decoded.ignored)) {
+          // One line per distinct reason, next to Voice's own stderr.
+          ignoredReasons.add(decoded.ignored);
+          log.write(`[pi-voice] ignored Voice stdout line: ${decoded.ignored}\n`);
+        }
         nl = leftover.indexOf("\n");
       }
     });
@@ -155,14 +161,24 @@ export class VoiceChild {
   }
 }
 
+/** Why a stdout line from Voice was not turned into an event. */
+export type IgnoredLine = { ignored: string };
+
+/** One stdout line from Voice, never throws. Checked against `contracts/pi-voice.json` `stdio.fromVoice`. */
 export function parseLine(raw: string): VoiceEvent | undefined {
+  const decoded = decodeLine(raw);
+  return "ignored" in decoded ? undefined : decoded;
+}
+
+/** Like `parseLine`, but says why a line was dropped, for the stderr log. */
+export function decodeLine(raw: string): VoiceEvent | IgnoredLine {
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
   } catch {
-    return;
+    return { ignored: "not JSON" };
   }
-  if (parsed == null || typeof parsed !== "object" || Array.isArray(parsed)) return;
+  if (parsed == null || typeof parsed !== "object" || Array.isArray(parsed)) return { ignored: "not a JSON object" };
   const object = parsed as { type?: unknown; message?: unknown; text?: unknown; id?: unknown; brief?: unknown; item_id?: unknown };
   if (object.type === "ready") return { tag: "ready" };
   if (object.type === "request_error") return { tag: "requestError", message:
@@ -176,7 +192,7 @@ export function parseLine(raw: string): VoiceEvent | undefined {
   if (object.type === "speech_started") return { tag: "speechStarted" };
   if (object.type === "heard") {
     const text = typeof object.text === "string" ? object.text.trim() : "";
-    if (!text) return;
+    if (!text) return { ignored: "heard: empty text" };
     // The server item id is stable across the revisions of one utterance, and
     // is the only reliable way to tell "the same sentence again, re-transcribed"
     // from "a new sentence". The text itself cannot: STT rewrites words it
@@ -188,21 +204,22 @@ export function parseLine(raw: string): VoiceEvent | undefined {
   }
   if (object.type === "spoken") {
     const text = typeof object.text === "string" ? object.text.trim() : "";
-    if (!text) return;
+    if (!text) return { ignored: "spoken: empty text" };
     return { tag: "spoken", text, itemId: typeof object.item_id === "string" ? object.item_id : "" };
   }
   if (object.type === "spoken_delta") {
     const text = typeof object.text === "string" ? object.text : "";
-    if (!text) return;
+    if (!text) return { ignored: "spoken_delta: empty text" };
     return { tag: "spokenDelta", text, itemId: typeof object.item_id === "string" ? object.item_id : "" };
   }
   if (object.type === "stop_work") return { tag: "stopWork" };
   if (object.type === "work") {
     const id = typeof object.id === "string" ? object.id.trim() : "";
     const brief = typeof object.brief === "string" ? object.brief.trim() : "";
-    if (!id || !brief) return;
+    if (!id || !brief) return { ignored: "work: missing id or brief" };
     return { tag: "work", id: id as WorkId, brief: brief as UserText };
   }
+  return { ignored: `unknown type ${typeof object.type === "string" ? object.type : "(none)"}` };
 }
 
 export function liveForeignOwner(): string | undefined {

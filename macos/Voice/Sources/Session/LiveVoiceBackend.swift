@@ -287,17 +287,7 @@ final class LiveVoiceBackend: VoiceBackend, HeadlessBackend {
     /// own. `dropped` stays silent: the dispatch never reached Pi (muted), so
     /// there is no failure to report.
     func updatePiJob(id: String, status: String, note: String?) {
-        let state: PiJobTracker.State
-        switch status {
-        case "queued": state = .queued
-        case "working": state = .working
-        case "done": state = .done
-        case "stopped": state = .stopped
-        case "superseded": state = .superseded
-        case "dropped": state = .dropped
-        case "failed": state = .failed
-        default: return
-        }
+        guard let state = PiJobTracker.State(rawValue: status) else { return }
         let previousState = piJobs.jobs[id]?.state
         piJobs.update(id: id, state: state, note: note)
         guard piJobs.jobs[id]?.state == state, previousState != state || state == .working else { return }
