@@ -8,7 +8,7 @@ This directory maps the verification surface for the pi-voice integration across
 - Run `pv.py doctor` and require all checks to report PASS before driving any feature.
 - Never drive an instance or process that this run did not start.
 - Driving `--via voice` and `--via pi` needs working audio IO. Doctor WARNs when the MacBook lid is closed; Voice then crashes with "player did not see an IO cycle". Driving `--via backend` still works with the lid closed.
-- Driving `--via pi` spends Pi model tokens and opens the real mic and speaker unmuted, because mute drops handoffs by design.
+- Driving `--via pi` spends Pi model tokens and opens the real mic and speaker unmuted, because mute drops handoffs by design. `--via voice` handoff, steer and stop also run unmuted, because Voice skips its fallback spoken ack while muted.
 - All drives spend OpenRouter tokens on the backend.
 
 ## Driving conventions

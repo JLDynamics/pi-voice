@@ -355,11 +355,16 @@ class Voice:
         t = self.send({"type": "user", "text": text})
         return t, self.wait(lambda e: e.get("type") in kinds + ("error", "request_error"), timeout, t)
 
-    def start_muted(self) -> bool:
-        self.send({"type": "mute", "muted": True})
+    def start(self, muted: bool = True) -> bool:
+        """Muted keeps the real mic and speaker closed. Unmuted is needed wherever a
+        spoken acknowledgement is checked: Voice skips its silent-handoff ack while
+        muted by design (VoiceToolFollowUp.shouldAcknowledgeHandoff)."""
+        self.muted = muted
+        self.send({"type": "mute", "muted": muted})
         ready = self.wait(lambda e: e.get("type") in ("ready", "error"), 240)
-        self.send({"type": "mute", "muted": True})
-        if not self.proof.check("Voice ready (muted: mic and speaker closed)", ready and ready["type"] == "ready", ready):
+        self.send({"type": "mute", "muted": muted})
+        label = "muted: mic and speaker closed" if muted else "unmuted: real mic and speaker open"
+        if not self.proof.check(f"Voice ready ({label})", ready and ready["type"] == "ready", ready):
             return False
         deadline = time.time() + 20
         running = False
@@ -370,6 +375,9 @@ class Voice:
         return self.proof.check("Voice audio engine started (needs working audio IO)", running, detail)
 
     def quit(self) -> None:
+        if not getattr(self, "muted", True):
+            heard = [e for _, e in self.events if e.get("type") in ("heard", "speech_started")]
+            self.proof.check("no room speech or echo heard while the mic was open", not heard, heard[:3])
         if self.proc.poll() is not None:
             self.proof.check("Voice still running at quit", False, self.crash_reason())
             return
@@ -397,13 +405,13 @@ def drive_conversation(run: Path, st: dict[str, Any], proof: Proof) -> None:
     before = usage(st)
     voice = Voice(run, st, proof, [], "conversation")
     try:
-        if not voice.start_muted():
+        if not voice.start(muted=True):
             return
         _, reply = voice.say("Hi there. Reply with just the single word hello.")
         proof.check("typed turn gets a spoken reply", mentions(reply, r"hello"), reply)
         time.sleep(2)
         _, reply = voice.say("What is two plus two? One short sentence.")
-        proof.check("second turn answers in context", mentions(reply, r"\b(4|four)\b"), reply)
+        proof.check("second typed turn gets a correct reply", mentions(reply, r"\b(4|four)\b"), reply)
         after = usage(st)
         (proof.dir / "usage.json").write_text(json.dumps({"before": before, "after": after}, indent=2) + "\n")
         proof.check("backend /v1/usage changed (model really called on this run's port)", before != after, "usage.json")
@@ -458,9 +466,9 @@ def drive_memory_backend(run: Path, st: dict[str, Any], proof: Proof) -> None:
 def drive_handoff_voice(run: Path, st: dict[str, Any], proof: Proof) -> None:
     voice = Voice(run, st, proof, [], "handoff")
     try:
-        if not voice.start_muted():
+        if not voice.start(muted=False):
             return
-        t, work = voice.say("Please have Pi list the files in my project folder.", ("work",), 45)
+        t, work = voice.say("Please have Pi list the files in the current project folder, the one Pi is working in.", ("work",), 45)
         if not proof.check("spawn_thinking emits a work event with id and brief",
                            work and work.get("type") == "work" and work.get("id") and work.get("brief"), work):
             return
@@ -485,7 +493,7 @@ def drive_handoff_voice(run: Path, st: dict[str, Any], proof: Proof) -> None:
 def drive_steer(run: Path, st: dict[str, Any], proof: Proof) -> None:
     voice = Voice(run, st, proof, [], "steer")
     try:
-        if not voice.start_muted():
+        if not voice.start(muted=False):
             return
         _, first = voice.say("Have Pi search my project for TODO comments.", ("work",), 45)
         if not proof.check("first handoff emits work", first and first.get("type") == "work", first):
@@ -517,7 +525,7 @@ def drive_steer(run: Path, st: dict[str, Any], proof: Proof) -> None:
 def drive_stop(run: Path, st: dict[str, Any], proof: Proof) -> None:
     voice = Voice(run, st, proof, [], "stop")
     try:
-        if not voice.start_muted():
+        if not voice.start(muted=False):
             return
         _, work = voice.say("Have Pi count the lines in the README file.", ("work",), 45)
         if not proof.check("handoff emits work", work and work.get("type") == "work", work):
@@ -560,7 +568,7 @@ def drive_memory_voice(run: Path, st: dict[str, Any], proof: Proof) -> None:
         return
     voice = Voice(run, st, proof, pack, "memory")
     try:
-        if not voice.start_muted():
+        if not voice.start(muted=True):
             return
         t, reply = voice.say(
             "Without asking Pi, from what you remember: what did I name this project, and which files did Pi find? One sentence.",
