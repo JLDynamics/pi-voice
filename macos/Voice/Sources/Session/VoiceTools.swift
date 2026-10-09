@@ -84,7 +84,7 @@ public final class VoiceToolExecutor: @unchecked Sendable {
 /// The two tools headless Voice publishes in Pi mode (`VOICE_THINKER=luna`).
 /// Names and the `brief` argument are part of the cross-language contract in
 /// `contracts/pi-voice.json`; the Python prompt names them too. Lives here, not
-/// in LiveVoiceBackend.swift, so `test.sh` compiles and checks it.
+/// in the LiveVoiceBackend files, so `test.sh` compiles and checks it.
 enum HeadlessTools {
     static let spawnThinking = "spawn_thinking"
     static let stopThinking = "stop_thinking"
