@@ -25,11 +25,19 @@ final class HeadlessBridge {
     /// Injected sink for testing; if nil, writes to standardOutput.
     var emitSink: (([String: Any]) -> Void)?
     var onTerminate: (() -> Void) = { NSApp.terminate(nil) }
+    var onExit: ((Int32) -> Void) = { code in
+        fflush(stdout)
+        LocalServiceStarter.shared.stop()
+        exit(code)
+    }
 
     func attach(session: SessionController, listenToStdin: Bool = true) {
         self.session = session
         spokenItemId = nil
 
+        session.onFatalStart = { [weak self] _ in
+            self?.onExit(HeadlessExitCode.audioUnavailable)
+        }
         session.onHeard = { [weak self] text, itemId in
             self?.emit(["type": "heard", "text": text, "item_id": itemId ?? ""])
         }

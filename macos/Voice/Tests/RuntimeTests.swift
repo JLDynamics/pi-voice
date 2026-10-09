@@ -117,6 +117,7 @@ struct RuntimeTests {
         testHeadlessBridge()
         await testSessionConversationHistory()
         await testStartFailureReachesBridge()
+        await testAudioIOProbe()
         testPiJobTracker()
         check(!PiJobTracker.shouldSpeakProgress(elapsed: 7, changed: true))
         check(PiJobTracker.shouldSpeakProgress(elapsed: 8, changed: true))
@@ -486,6 +487,8 @@ struct RuntimeTests {
         let bridge = HeadlessBridge()
         var emitted = [[String: Any]]()
         bridge.emitSink = { emitted.append($0) }
+        var nonFatalExitCalled = false
+        bridge.onExit = { _ in nonFatalExitCalled = true }
         bridge.attach(session: session, listenToStdin: false)
         await session.begin()
         let errors = emitted.filter { ($0["type"] as? String) == "error" }
@@ -493,6 +496,34 @@ struct RuntimeTests {
         check((errors.first?["message"] as? String) == "Local service startup failed.")
         check(!emitted.contains { ($0["type"] as? String) == "ready" })
         check(session.state == .failed("Local service startup failed."))
+        check(!nonFatalExitCalled, "non-fatal start error (Boom) must NOT call onExit")
+
+        // Fatal start error (NoIO) must emit error before calling onExit(3)
+        struct NoIO: FatalStartError, LocalizedError {
+            var errorDescription: String? { AudioIOProbe.noIOMessage }
+        }
+        let fatalBackend = MockVoiceBackend()
+        fatalBackend.startError = NoIO()
+        let fatalSession = SessionController(backend: fatalBackend)
+        let fatalBridge = HeadlessBridge()
+        var fatalEmitted = [[String: Any]]()
+        fatalBridge.emitSink = { fatalEmitted.append($0) }
+        var exitCode: Int32?
+        var exitCallCount = 0
+        var errorsBeforeExit = 0
+        fatalBridge.onExit = { code in
+            exitCallCount += 1
+            exitCode = code
+            errorsBeforeExit = fatalEmitted.filter { ($0["type"] as? String) == "error" }.count
+        }
+        fatalBridge.attach(session: fatalSession, listenToStdin: false)
+        await fatalSession.begin()
+        let fatalErrors = fatalEmitted.filter { ($0["type"] as? String) == "error" }
+        check(fatalErrors.count == 1, "fatal start failure emits exactly one error event")
+        check((fatalErrors.first?["message"] as? String) == AudioIOProbe.noIOMessage)
+        check(errorsBeforeExit == 1, "error event was emitted BEFORE onExit was called")
+        check(exitCallCount == 1, "onExit was called once")
+        check(exitCode == 3, "onExit was called with 3")
 
         // A backend that already reported its failure is not reported twice.
         let reporting = MockVoiceBackend()
@@ -501,6 +532,8 @@ struct RuntimeTests {
         let reportingBridge = HeadlessBridge()
         var reported = [[String: Any]]()
         reportingBridge.emitSink = { reported.append($0) }
+        var reportingExitCalled = false
+        reportingBridge.onExit = { _ in reportingExitCalled = true }
         reportingBridge.attach(session: reportingSession, listenToStdin: false)
         let original = reporting.onState
         reporting.onState = { state in
@@ -509,6 +542,56 @@ struct RuntimeTests {
         }
         await reportingSession.begin()
         check(reported.filter { ($0["type"] as? String) == "error" }.count == 1, "no duplicate error event")
+        check(!reportingExitCalled)
+    }
+
+    static func testAudioIOProbe() async {
+        // Returns true immediately with zero sleeps when rendered() is already true
+        var sleepCalls1 = 0
+        let res1 = await AudioIOProbe.waitForFirstCycle(
+            timeout: 2.0,
+            pollInterval: 0.02,
+            rendered: { true },
+            sleep: { _ in sleepCalls1 += 1 }
+        )
+        check(res1, "AudioIOProbe returns true immediately when rendered() is true")
+        check(sleepCalls1 == 0, "AudioIOProbe zero sleeps when rendered() is true")
+
+        // Returns true after k polls
+        let k = 5
+        var fakeClock2: TimeInterval = 0
+        var sleepCalls2 = 0
+        let res2 = await AudioIOProbe.waitForFirstCycle(
+            timeout: 2.0,
+            pollInterval: 0.02,
+            rendered: { sleepCalls2 >= k },
+            sleep: { interval in
+                sleepCalls2 += 1
+                fakeClock2 += interval
+            }
+        )
+        check(res2, "AudioIOProbe returns true after k polls")
+        check(sleepCalls2 == k, "AudioIOProbe exactly k sleeps; got \(sleepCalls2) vs \(k)")
+
+        // Returns false after the timeout, with an injected fake sleep that advances a fake clock (no real sleeping).
+        // Check the number of sleeps is bounded by timeout/pollInterval (+1).
+        let timeout: TimeInterval = 2.0
+        let pollInterval: TimeInterval = 0.02
+        var fakeClock3: TimeInterval = 0
+        var sleepCalls3 = 0
+        let res3 = await AudioIOProbe.waitForFirstCycle(
+            timeout: timeout,
+            pollInterval: pollInterval,
+            rendered: { false },
+            sleep: { interval in
+                sleepCalls3 += 1
+                fakeClock3 += interval
+            }
+        )
+        check(!res3, "AudioIOProbe returns false after timeout")
+        let maxSleeps = Int(ceil(timeout / pollInterval)) + 1
+        check(sleepCalls3 <= maxSleeps, "number of sleeps bounded by timeout/pollInterval (+1); got \(sleepCalls3) max \(maxSleeps)")
+        check(sleepCalls3 >= Int(ceil(timeout / pollInterval)), "AudioIOProbe ran until timeout")
     }
 
     @MainActor

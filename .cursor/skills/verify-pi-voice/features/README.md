@@ -7,7 +7,7 @@ This directory maps the verification surface for the pi-voice integration across
 - Launch an isolated backend using `pv.py launch`. This allocates an isolated port in the range 18766 to 18865 and never touches user port 8766.
 - Run `pv.py doctor` and require all checks to report PASS before driving any feature.
 - Never drive an instance or process that this run did not start.
-- Driving `--via voice` and `--via pi` needs working audio IO. Doctor WARNs when the MacBook lid is closed; Voice then crashes with "player did not see an IO cycle". Driving `--via backend` still works with the lid closed.
+- Driving `--via voice` and `--via pi` needs working audio IO. Doctor WARNs when the MacBook lid is closed; Voice then stops with a readable "No audio input or output is running" error and exit 3. `pv.py drive noaudio` checks that path with the lid open. Driving `--via backend` still works with the lid closed.
 - Driving `--via pi` spends Pi model tokens and opens the real mic and speaker unmuted, because mute drops handoffs by design. `--via voice` handoff, steer and stop also run unmuted, because Voice skips its fallback spoken ack while muted.
 - All drives spend OpenRouter tokens on the backend.
 
