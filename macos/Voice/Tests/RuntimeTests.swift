@@ -417,6 +417,21 @@ struct RuntimeTests {
         check(backend.interruptCount > priorUserInterrupts, "User line interrupts session")
         check(backend.ingestedUserText.contains("write a poem"), "User line ingests text")
 
+        // Decision (U6): a user line without a string text is ignored, never
+        // ingested as an empty turn and never interrupting the reply in flight.
+        var ignoredReasons: [String] = []
+        bridge.onIgnoredLine = { ignoredReasons.append($0) }
+        let ingestedBefore = backend.ingestedUserText.count
+        let interruptsBefore = backend.interruptCount
+        bridge.handle(line: #"{"type":"user"}"#)
+        bridge.handle(line: #"{"type":"user","text":42}"#)
+        check(backend.ingestedUserText.count == ingestedBefore, "user line without text is not ingested")
+        check(backend.interruptCount == interruptsBefore, "user line without text does not interrupt")
+        check(ignoredReasons == ["user: missing string text", "user: missing string text"], "user line without text is ignored with a reason")
+        check(HeadlessCommand.decode(Data(#"{"type":"user"}"#.utf8)) == .failure(.init(reason: "user: missing string text")), "decode rejects user without text")
+        check(HeadlessCommand.decode(Data(#"{"type":"user","text":"hi"}"#.utf8)) == .success(.user("hi")), "decode keeps user text")
+        bridge.onIgnoredLine = nil
+
         // Wire contract (in): result
         bridge.handle(line: #"{"type":"result","id":"call-1","speak":"here is the poem","full":"here is the complete poem"}"#)
         check(backend.postedResults.contains { $0.id == "call-1" && $0.speak == "here is the poem" && $0.full == "here is the complete poem" }, "Result line keeps both the spoken preview and complete result")
