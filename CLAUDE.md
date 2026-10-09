@@ -32,7 +32,7 @@ uv run pytest -q
 uv run pytest tests/test_text_prompt.py::test_text_prompt_keeps_persona_in_session_prompt -q   # single test
 
 node --test 'pi-voice/src/*.test.ts'   # pi-voice extension (no npm script, Node ≥22.18 strips types)
-bash macos/Voice/scripts/test.sh       # Swift runtime tests (swiftc, no Xcode project)
+bash macos/Voice/scripts/test.sh       # Swift runtime tests (swiftc, no Xcode project); use check(), never assert()
 bash macos/Voice/scripts/build.sh      # build macos/Voice/build/Voice.app
 
 uv run python scripts/verify-voice.py              # live text turn over the real WebSocket
