@@ -35,9 +35,9 @@ jobs:
       - run: uv sync --frozen --no-default-groups --group dev
       - run: uv run python -c "import nltk; nltk.download('punkt_tab')"
       - name: Ruff
-        run: uv run ruff check src/ tests/
+        run: uv run ruff check src/ tests/ .cursor/skills/
       - name: Format
-        run: uv run ruff format --check src/ tests/
+        run: uv run ruff format --check src/ tests/ .cursor/skills/
       - name: Mypy
         run: uv run mypy src/
       - name: Tests

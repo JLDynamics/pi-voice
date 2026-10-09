@@ -29,7 +29,10 @@ async def connect(url: str):
 
 def message(role: str, text: str) -> dict:
     kind = "output_text" if role == "assistant" else "input_text"
-    return {"type": "conversation.item.create", "item": {"type": "message", "role": role, "content": [{"type": kind, "text": text}]}}
+    return {
+        "type": "conversation.item.create",
+        "item": {"type": "message", "role": role, "content": [{"type": kind, "text": text}]},
+    }
 
 
 async def main(url: str, pack_path: str, question: str, out_path: str) -> None:
@@ -57,8 +60,12 @@ async def main(url: str, pack_path: str, question: str, out_path: str) -> None:
             event = json.loads(await asyncio.wait_for(ws.recv(), timeout=max(1.0, deadline - time.monotonic())))
             kind = event.get("type") or ""
             result["events"].append(kind)
-            if kind in {"response.output_audio_transcript.delta", "response.audio_transcript.delta",
-                        "response.output_text.delta", "response.text.delta"}:
+            if kind in {
+                "response.output_audio_transcript.delta",
+                "response.audio_transcript.delta",
+                "response.output_text.delta",
+                "response.text.delta",
+            }:
                 parts.append(event.get("delta") or "")
             elif kind == "response.output_item.done" and (event.get("item") or {}).get("type") == "function_call":
                 result["tool_calls"].append((event.get("item") or {}).get("name"))

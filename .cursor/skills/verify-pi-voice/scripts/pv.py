@@ -43,12 +43,15 @@ FIXTURE = {
 }
 JOB_MARKER = re.compile(r"\[Pi voice job id: [^\]]+\]$")
 
+
 def die(message: str) -> None:
     print(f"pv: {message}", file=sys.stderr)
     sys.exit(2)
 
+
 def stamp() -> str:
     return time.strftime("%Y%m%d-%H%M%S")
+
 
 def run_dir(run_id: Optional[str]) -> Path:
     if not run_id:
@@ -61,22 +64,27 @@ def run_dir(run_id: Optional[str]) -> Path:
         die(f"no state.json in {path}")
     return path
 
+
 def load_state(run: Path) -> dict[str, Any]:
     return json.loads((run / "state.json").read_text())
+
 
 def save_state(run: Path, state: dict[str, Any]) -> None:
     tmp = run / "state.json.tmp"
     tmp.write_text(json.dumps(state, indent=2) + "\n")
     tmp.replace(run / "state.json")
 
+
 def remember_child(run: Path, pid: int, kind: str, match: str) -> None:
     state = load_state(run)
     state.setdefault("children", []).append({"pid": pid, "pgid": pid, "kind": kind, "match": match})
     save_state(run, state)
 
+
 def ps_command(pid: int) -> str:
     out = subprocess.run(["ps", "-o", "command=", "-p", str(pid)], capture_output=True, text=True)
     return out.stdout.strip()
+
 
 def alive(pid: int) -> bool:
     try:
@@ -87,6 +95,7 @@ def alive(pid: int) -> bool:
     except PermissionError:
         return True
 
+
 def group_members(pgid: int) -> list[tuple[int, str]]:
     out = subprocess.run(["ps", "-axo", "pid=,pgid=,command="], capture_output=True, text=True).stdout
     members = []
@@ -96,16 +105,19 @@ def group_members(pgid: int) -> list[tuple[int, str]]:
             members.append((int(parts[0]), parts[2]))
     return members
 
+
 def listener(port: int) -> Optional[int]:
     out = subprocess.run(["lsof", "-ti", f"TCP:{port}", "-sTCP:LISTEN"], capture_output=True, text=True).stdout
     pids = [int(p) for p in out.split()]
     return pids[0] if pids else None
+
 
 def pgid_of(pid: int) -> Optional[int]:
     try:
         return os.getpgid(pid)
     except ProcessLookupError:
         return None
+
 
 def free_port() -> int:
     for port in range(18766, 18866):
@@ -120,12 +132,14 @@ def free_port() -> int:
     die("no free port in 18766-18865")
     return 0
 
+
 def http_json(url: str, timeout: float = 2.0) -> Optional[dict[str, Any]]:
     try:
         with urllib.request.urlopen(url, timeout=timeout) as response:
             return json.loads(response.read().decode())
     except Exception:
         return None
+
 
 def stop_group(pgid: int, label: str, must_match: tuple[str, ...]) -> str:
     members = group_members(pgid)
@@ -140,6 +154,7 @@ def stop_group(pgid: int, label: str, must_match: tuple[str, ...]) -> str:
         time.sleep(0.2)
     os.killpg(pgid, signal.SIGKILL)
     return f"{label}: SIGKILL pgid {pgid} after 15s"
+
 
 def write_wrapper(run: Path, port: int) -> Path:
     """VOICE_BIN target: the real Voice with a per-process wsUrl (NSArgumentDomain).
@@ -159,8 +174,10 @@ def write_wrapper(run: Path, port: int) -> Path:
     wrapper.chmod(0o755)
     return wrapper
 
+
 def newest_source_mtime() -> float:
     return max(p.stat().st_mtime for p in (REPO / "macos/Voice/Sources").rglob("*.swift"))
+
 
 def cmd_launch(args: argparse.Namespace) -> None:
     port = args.port or free_port()
@@ -177,21 +194,33 @@ def cmd_launch(args: argparse.Namespace) -> None:
     if args.build or not VOICE_BIN.exists():
         print("building Voice.app (log: logs/build.log)...")
         with open(run / "logs/build.log", "wb") as log:
-            if subprocess.run(["bash", str(REPO / "macos/Voice/scripts/build.sh")], stdout=log, stderr=subprocess.STDOUT).returncode:
+            if subprocess.run(
+                ["bash", str(REPO / "macos/Voice/scripts/build.sh")], stdout=log, stderr=subprocess.STDOUT
+            ).returncode:
                 die(f"Voice build failed; see {run / 'logs/build.log'}")
     wrapper = write_wrapper(run, port)
     env = dict(os.environ, PORT=str(port), SERVER_LOG=str(run / "logs/server.log"))
     with open(run / "logs/launcher.log", "ab") as out:
         proc = subprocess.Popen(
             ["bash", str(REPO / "run-browser.sh")],
-            cwd=REPO, env=env, stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT,
+            cwd=REPO,
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=out,
+            stderr=subprocess.STDOUT,
             start_new_session=True,
         )
     state = {
-        "run_id": run_id, "repo": str(REPO), "port": port,
+        "run_id": run_id,
+        "repo": str(REPO),
+        "port": port,
         "ws_url": f"ws://127.0.0.1:{port}/v1/realtime",
-        "launcher_pid": proc.pid, "pgid": proc.pid, "started": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
-        "voice_bin": str(VOICE_BIN), "wrapper": str(wrapper), "children": [],
+        "launcher_pid": proc.pid,
+        "pgid": proc.pid,
+        "started": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "voice_bin": str(VOICE_BIN),
+        "wrapper": str(wrapper),
+        "children": [],
     }
     save_state(run, state)
     (ROOT / "latest").write_text(run_id + "\n")
@@ -200,7 +229,9 @@ def cmd_launch(args: argparse.Namespace) -> None:
     health: Optional[dict[str, Any]] = None
     while time.time() < deadline:
         if proc.poll() is not None:
-            die(f"launcher exited with {proc.returncode}; see {run / 'logs/launcher.log'} and {run / 'logs/server.log'}")
+            die(
+                f"launcher exited with {proc.returncode}; see {run / 'logs/launcher.log'} and {run / 'logs/server.log'}"
+            )
         health = http_json(f"http://127.0.0.1:{port}/health")
         if health and health.get("ready"):
             break
@@ -209,6 +240,7 @@ def cmd_launch(args: argparse.Namespace) -> None:
         die(f"backend not ready after {args.timeout}s; run `pv.py doctor`, then `pv.py cleanup`")
     print(json.dumps({"run": str(run), "port": port, "health": health}, indent=2))
     print(f"ready. next: {Path(__file__)} doctor")
+
 
 def cmd_doctor(args: argparse.Namespace) -> None:
     run = run_dir(args.run)
@@ -222,8 +254,11 @@ def cmd_doctor(args: argparse.Namespace) -> None:
     launcher_cmd = ps_command(st["launcher_pid"]) if alive(st["launcher_pid"]) else ""
     check("launcher alive and is run-browser.sh", "run-browser.sh" in launcher_cmd, launcher_cmd or "not running")
     lp = listener(port)
-    check(f"port {port} listener belongs to this run's process group",
-          lp is not None and pgid_of(lp) == st["pgid"], {"listener_pid": lp, "pgid": pgid_of(lp) if lp else None})
+    check(
+        f"port {port} listener belongs to this run's process group",
+        lp is not None and pgid_of(lp) == st["pgid"],
+        {"listener_pid": lp, "pgid": pgid_of(lp) if lp else None},
+    )
     health = http_json(f"http://127.0.0.1:{port}/health") or {}
     check("/health ready", health.get("ready") is True, {k: health.get(k) for k in ("status", "ready", "server_tools")})
     source = health.get("source")
@@ -231,23 +266,38 @@ def cmd_doctor(args: argparse.Namespace) -> None:
     check("/health not stale (disk matches loaded code)", health.get("stale") is False, health.get("stale"))
     built = VOICE_BIN.stat().st_mtime if VOICE_BIN.exists() else 0
     check("Voice.app built from this checkout", VOICE_BIN.exists(), str(VOICE_BIN))
-    check("Voice.app build newer than Swift sources", built >= newest_source_mtime(),
-          "rebuild: pv.py launch --build (or bash macos/Voice/scripts/build.sh)" if built < newest_source_mtime() else "fresh")
+    check(
+        "Voice.app build newer than Swift sources",
+        built >= newest_source_mtime(),
+        "rebuild: pv.py launch --build (or bash macos/Voice/scripts/build.sh)"
+        if built < newest_source_mtime()
+        else "fresh",
+    )
     wrapper = Path(st["wrapper"])
-    check("voice wrapper targets this run's port", wrapper.exists() and f":{port}/" in wrapper.read_text(), str(wrapper))
+    check(
+        "voice wrapper targets this run's port", wrapper.exists() and f":{port}/" in wrapper.read_text(), str(wrapper)
+    )
     pi = shutil.which("pi")
     pi_version = subprocess.run([pi, "--version"], capture_output=True, text=True).stdout.strip() if pi else ""
     check("pi CLI available (needed only for --via pi)", bool(pi), pi_version or "missing")
-    check("isolated dirs exist", all((run / f"scratch/{d}").is_dir() for d in ("cfg", "tmp", "sessions", "proj")), str(run / "scratch"))
+    check(
+        "isolated dirs exist",
+        all((run / f"scratch/{d}").is_dir() for d in ("cfg", "tmp", "sessions", "proj")),
+        str(run / "scratch"),
+    )
     stray = [c for c in st.get("children", []) if alive(c["pid"])]
     check("no stray drive children", not stray, stray)
     user_listener = listener(USER_PORT)
-    clamshell = subprocess.run(["ioreg", "-r", "-k", "AppleClamshellState", "-d", "4"], capture_output=True, text=True).stdout
+    clamshell = subprocess.run(
+        ["ioreg", "-r", "-k", "AppleClamshellState", "-d", "4"], capture_output=True, text=True
+    ).stdout
     lid_closed = '"AppleClamshellState" = Yes' in clamshell
     info = {"user_port_8766_listener": user_listener, "note": "informational; never touched", "lid_closed": lid_closed}
     if lid_closed:
-        print("WARN  lid is closed: built-in audio does no IO, so Voice stops with 'No audio input or output is running' "
-              "(exit 3) and --via voice / --via pi report NOT VERIFIED. --via backend still works.")
+        print(
+            "WARN  lid is closed: built-in audio does no IO, so Voice stops with 'No audio input or output is running' "
+            "(exit 3) and --via voice / --via pi report NOT VERIFIED. --via backend still works."
+        )
     report = {"run": str(run), "checks": checks, "info": info}
     out = run / "evidence" / f"doctor-{stamp()}.json"
     out.write_text(json.dumps(report, indent=2) + "\n")
@@ -256,6 +306,7 @@ def cmd_doctor(args: argparse.Namespace) -> None:
     print(f"info: {info}")
     print(f"saved {out}")
     sys.exit(0 if all(c["ok"] for c in checks) else 1)
+
 
 class Proof:
     def __init__(self, run: Path, feature: str, via: str):
@@ -285,21 +336,38 @@ class Proof:
         self.log.close()
         sys.exit(0 if verdict == "VERIFIED" else 1)
 
+
 class Voice:
     """Headless Voice.app over NDJSON stdio; the harness plays the Pi extension's part."""
 
-    def __init__(self, run: Path, st: dict[str, Any], proof: Proof, history: list[dict[str, str]], label: str,
-                 extra_args: tuple[str, ...] = ()):
+    def __init__(
+        self,
+        run: Path,
+        st: dict[str, Any],
+        proof: Proof,
+        history: list[dict[str, str]],
+        label: str,
+        extra_args: tuple[str, ...] = (),
+    ):
         self.proof = proof
         self.events: list[tuple[float, dict[str, Any]]] = []
         self.cond = threading.Condition()
-        env = dict(os.environ, TMPDIR=str(run / "scratch/tmp") + "/", VOICE_THINKER="luna",
-                   VOICE_HISTORY=json.dumps(history), PV_HISTORY_DUMP=str(proof.dir))
+        env = dict(
+            os.environ,
+            TMPDIR=str(run / "scratch/tmp") + "/",
+            VOICE_THINKER="luna",
+            VOICE_HISTORY=json.dumps(history),
+            PV_HISTORY_DUMP=str(proof.dir),
+        )
         self.transcript = open(proof.dir / f"{label}.ndjson", "a")
         self.stderr_path = run / "logs" / f"voice-{label}-{stamp()}.stderr.log"
         self.proc = subprocess.Popen(
-            [st["wrapper"], "--headless", *extra_args], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-            stderr=open(self.stderr_path, "ab"), env=env, start_new_session=True,
+            [st["wrapper"], "--headless", *extra_args],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=open(self.stderr_path, "ab"),
+            env=env,
+            start_new_session=True,
         )
         remember_child(run, self.proc.pid, "voice", str(VOICE_BIN))
         proof.note("spawned headless Voice pid", self.proc.pid)
@@ -312,7 +380,9 @@ class Voice:
                 event = json.loads(raw)
             except ValueError:
                 continue
-            self.transcript.write(json.dumps({"t": round(time.time() - self.proof.t0, 2), "dir": "out", "event": event}) + "\n")
+            self.transcript.write(
+                json.dumps({"t": round(time.time() - self.proof.t0, 2), "dir": "out", "event": event}) + "\n"
+            )
             self.transcript.flush()
             if event.get("type") != "spoken_delta":
                 self.proof.note("<-", json.dumps(event)[:300])
@@ -335,14 +405,18 @@ class Voice:
         assert self.proc.stdin
         if self.proc.poll() is not None:
             raise RuntimeError(f"Voice exited before {obj.get('type')}: {self.crash_reason()} (see {self.stderr_path})")
-        self.transcript.write(json.dumps({"t": round(time.time() - self.proof.t0, 2), "dir": "in", "event": obj}) + "\n")
+        self.transcript.write(
+            json.dumps({"t": round(time.time() - self.proof.t0, 2), "dir": "in", "event": obj}) + "\n"
+        )
         self.transcript.flush()
         self.proof.note("->", json.dumps(obj)[:300])
         self.proc.stdin.write((json.dumps(obj) + "\n").encode())
         self.proc.stdin.flush()
         return time.time()
 
-    def wait(self, pred: Callable[[dict[str, Any]], bool], timeout: float, since: float = 0) -> Optional[dict[str, Any]]:
+    def wait(
+        self, pred: Callable[[dict[str, Any]], bool], timeout: float, since: float = 0
+    ) -> Optional[dict[str, Any]]:
         deadline = time.time() + timeout
         with self.cond:
             while True:
@@ -358,7 +432,9 @@ class Voice:
         with self.cond:
             return [e for t, e in self.events if t >= since and e.get("type") == kind]
 
-    def say(self, text: str, kinds: tuple[str, ...] = ("spoken",), timeout: float = 60) -> tuple[float, Optional[dict[str, Any]]]:
+    def say(
+        self, text: str, kinds: tuple[str, ...] = ("spoken",), timeout: float = 60
+    ) -> tuple[float, Optional[dict[str, Any]]]:
         t = self.send({"type": "user", "text": text})
         return t, self.wait(lambda e: e.get("type") in kinds + ("error", "request_error"), timeout, t)
 
@@ -378,7 +454,13 @@ class Voice:
         while time.time() < deadline and self.proc.poll() is None and not running:
             running = "running rate=" in self.stderr_path.read_text(errors="replace")
             time.sleep(0.5)
-        detail = "audio engine running" if running else self.crash_reason() if self.proc.poll() is not None else "no 'running rate=' in 20s"
+        detail = (
+            "audio engine running"
+            if running
+            else self.crash_reason()
+            if self.proc.poll() is not None
+            else "no 'running rate=' in 20s"
+        )
         return self.proof.check("Voice audio engine started (needs working audio IO)", running, detail)
 
     def quit(self) -> None:
@@ -396,17 +478,21 @@ class Voice:
             self.proof.check("quit exits cleanly", False, "no exit in 10s; SIGTERM")
             os.killpg(self.proc.pid, signal.SIGTERM)
 
+
 def journal_events(run: Path) -> list[dict[str, Any]]:
     path = run / "scratch/tmp/pi-voice.jobs.jsonl"
     if not path.exists():
         return []
     return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
 
+
 def mentions(event: Optional[dict[str, Any]], pattern: str) -> bool:
     return bool(event and event.get("type") == "spoken" and re.search(pattern, event.get("text", ""), re.I))
 
+
 def usage(st: dict[str, Any]) -> Optional[dict[str, Any]]:
     return http_json(f"http://127.0.0.1:{st['port']}/v1/usage")
+
 
 def drive_conversation(run: Path, st: dict[str, Any], proof: Proof) -> None:
     before = usage(st)
@@ -425,6 +511,7 @@ def drive_conversation(run: Path, st: dict[str, Any], proof: Proof) -> None:
     finally:
         voice.quit()
 
+
 def backend_python() -> list[str]:
     venv = REPO / ".venv/bin/python"
     return [str(venv)] if venv.exists() else ["uv", "run", "--project", str(REPO), "python"]
@@ -433,8 +520,13 @@ def backend_python() -> list[str]:
 def drive_conversation_backend(run: Path, st: dict[str, Any], proof: Proof) -> None:
     port = st["port"]
     env = dict(os.environ, VOICE_HTTP=f"http://127.0.0.1:{port}", VOICE_WS=st["ws_url"])
-    out = subprocess.run(backend_python() + [str(REPO / "scripts/verify-voice.py"), "--out", str(proof.dir / "verify-voice")],
-                         cwd=REPO, env=env, capture_output=True, text=True)
+    out = subprocess.run(
+        backend_python() + [str(REPO / "scripts/verify-voice.py"), "--out", str(proof.dir / "verify-voice")],
+        cwd=REPO,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
     (proof.dir / "verify-voice.stdout.txt").write_text(out.stdout + out.stderr)
     try:
         summary = json.loads((proof.dir / "verify-voice/summary.json").read_text())
@@ -443,30 +535,51 @@ def drive_conversation_backend(run: Path, st: dict[str, Any], proof: Proof) -> N
         return
     for mark, name, detail in re.findall(r"^\[(ok|FAIL)\] (.+?)(?: \u2014 (.*))?$", out.stdout, re.M):
         proof.check(f"verify-voice: {name}", mark == "ok", detail[:200])
-    proof.check("verify-voice.py summary ok and exit 0", summary.get("ok") is True and out.returncode == 0,
-                {"failed": summary.get("failed"), "rc": out.returncode})
+    proof.check(
+        "verify-voice.py summary ok and exit 0",
+        summary.get("ok") is True and out.returncode == 0,
+        {"failed": summary.get("failed"), "rc": out.returncode},
+    )
 
 
 def drive_memory_backend(run: Path, st: dict[str, Any], proof: Proof) -> None:
     pack = seed_pack(run, proof)
     text = pack[0]["text"] if pack else ""
-    if not proof.check("pack is one user turn with Latest and a Pi result",
-                       len(pack) == 1 and pack[0]["role"] == "user" and "Latest:" in text and "[Pi result" in text,
-                       text[:300]):
+    if not proof.check(
+        "pack is one user turn with Latest and a Pi result",
+        len(pack) == 1 and pack[0]["role"] == "user" and "Latest:" in text and "[Pi result" in text,
+        text[:300],
+    ):
         return
     question = "Without asking Pi, from what you remember: what did I name this project, and which files did Pi find? One sentence."
-    out = subprocess.run(backend_python() + [str(SKILL_DIR / "scripts/ws_recall.py"), st["ws_url"], str(proof.dir / "startup-pack.json"),
-                                             question, str(proof.dir / "recall.json")], capture_output=True, text=True)
+    out = subprocess.run(
+        backend_python()
+        + [
+            str(SKILL_DIR / "scripts/ws_recall.py"),
+            st["ws_url"],
+            str(proof.dir / "startup-pack.json"),
+            question,
+            str(proof.dir / "recall.json"),
+        ],
+        capture_output=True,
+        text=True,
+    )
     (proof.dir / "ws_recall.stderr.txt").write_text(out.stderr)
     try:
         recall = json.loads((proof.dir / "recall.json").read_text())
     except (OSError, ValueError):
         proof.check("ws_recall.py wrote recall.json", False, out.stderr[-400:])
         return
-    proof.check("pack injected without a reply (no response before the question)", recall.get("responses_before_question") == 0,
-                recall.get("responses_before_question"))
-    proof.check("Agent recalls the earlier call from the pack", re.search(r"pelican", recall.get("transcript", ""), re.I),
-                recall.get("transcript"))
+    proof.check(
+        "pack injected without a reply (no response before the question)",
+        recall.get("responses_before_question") == 0,
+        recall.get("responses_before_question"),
+    )
+    proof.check(
+        "Agent recalls the earlier call from the pack",
+        re.search(r"pelican", recall.get("transcript", ""), re.I),
+        recall.get("transcript"),
+    )
     proof.check("recall used no tool (answered from the pack)", not recall.get("tool_calls"), recall.get("tool_calls"))
 
 
@@ -475,14 +588,21 @@ def drive_handoff_voice(run: Path, st: dict[str, Any], proof: Proof) -> None:
     try:
         if not voice.start(muted=False):
             return
-        t, work = voice.say("Please have Pi list the files in the current project folder, the one Pi is working in.", ("work",), 45)
-        if not proof.check("spawn_thinking emits a work event with id and brief",
-                           work and work.get("type") == "work" and work.get("id") and work.get("brief"), work):
+        t, work = voice.say(
+            "Please have Pi list the files in the current project folder, the one Pi is working in.", ("work",), 45
+        )
+        if not proof.check(
+            "spawn_thinking emits a work event with id and brief",
+            work and work.get("type") == "work" and work.get("id") and work.get("brief"),
+            work,
+        ):
             return
         ack = voice.wait(lambda e: e.get("type") == "spoken", 15, t)
         proof.check("handoff is acknowledged aloud", ack, ack)
         time.sleep(3)
-        proof.check("one handoff, not repeated by the ack", len(voice.after(t, "work")) == 1, len(voice.after(t, "work")))
+        proof.check(
+            "one handoff, not repeated by the ack", len(voice.after(t, "work")) == 1, len(voice.after(t, "work"))
+        )
         voice.send({"type": "job_update", "id": work["id"], "status": "working"})
         time.sleep(2)
         voice.send({"type": "job_update", "id": work["id"], "status": "done"})
@@ -492,10 +612,14 @@ def drive_handoff_voice(run: Path, st: dict[str, Any], proof: Proof) -> None:
         proof.check("[FINAL] result is spoken back", mentions(final, r"readme|main|notes|three|\b3\b"), final)
         journal = journal_events(run)
         (proof.dir / "jobs-journal.json").write_text(json.dumps(journal, indent=2) + "\n")
-        proof.check("job journal written under the run's TMPDIR", any(j.get("id") == work["id"] for j in journal),
-                    [j.get("event") for j in journal])
+        proof.check(
+            "job journal written under the run's TMPDIR",
+            any(j.get("id") == work["id"] for j in journal),
+            [j.get("event") for j in journal],
+        )
     finally:
         voice.quit()
+
 
 def drive_steer(run: Path, st: dict[str, Any], proof: Proof) -> None:
     voice = Voice(run, st, proof, [], "steer")
@@ -508,13 +632,20 @@ def drive_steer(run: Path, st: dict[str, Any], proof: Proof) -> None:
         time.sleep(6)
         voice.send({"type": "job_update", "id": first["id"], "status": "working"})
         time.sleep(1)
-        t, second = voice.say("Actually, tell Pi to look for FIXME comments instead of TODO.", ("work", "stop_work"), 45)
-        if not proof.check("redirect while busy emits a new work id (steer, not stop)",
-                           second and second.get("type") == "work" and second.get("id") != first["id"], second):
+        t, second = voice.say(
+            "Actually, tell Pi to look for FIXME comments instead of TODO.", ("work", "stop_work"), 45
+        )
+        if not proof.check(
+            "redirect while busy emits a new work id (steer, not stop)",
+            second and second.get("type") == "work" and second.get("id") != first["id"],
+            second,
+        ):
             return
         ack = voice.wait(lambda e: e.get("type") == "spoken", 15, t)
         proof.check("redirect is acknowledged aloud", ack, ack)
-        voice.send({"type": "job_update", "id": first["id"], "status": "superseded", "note": "Task updated; Pi continues"})
+        voice.send(
+            {"type": "job_update", "id": first["id"], "status": "superseded", "note": "Task updated; Pi continues"}
+        )
         voice.send({"type": "job_update", "id": second["id"], "status": "working"})
         time.sleep(3)
         answer = "One FIXME: main.py line 1 says handle empty input."
@@ -524,10 +655,14 @@ def drive_steer(run: Path, st: dict[str, Any], proof: Proof) -> None:
         proof.check("the redirected job's result is spoken", mentions(final, r"fixme|main|empty input"), final)
         journal = journal_events(run)
         (proof.dir / "jobs-journal.json").write_text(json.dumps(journal, indent=2) + "\n")
-        proof.check("journal records the steer", any(j.get("event") == "steered" and j.get("id") == second["id"] for j in journal),
-                    [(j.get("event"), j.get("id")) for j in journal])
+        proof.check(
+            "journal records the steer",
+            any(j.get("event") == "steered" and j.get("id") == second["id"] for j in journal),
+            [(j.get("event"), j.get("id")) for j in journal],
+        )
     finally:
         voice.quit()
+
 
 def drive_stop(run: Path, st: dict[str, Any], proof: Proof) -> None:
     voice = Voice(run, st, proof, [], "stop")
@@ -548,9 +683,12 @@ def drive_stop(run: Path, st: dict[str, Any], proof: Proof) -> None:
         time.sleep(3)
         t, idle = voice.say("Stop whatever Pi is doing.", ("spoken",), 25)
         proof.check("stop with nothing running still answers", idle and idle.get("type") == "spoken", idle)
-        proof.check("stop with nothing running forwards nothing", not voice.after(t, "stop_work"), voice.after(t, "stop_work"))
+        proof.check(
+            "stop with nothing running forwards nothing", not voice.after(t, "stop_work"), voice.after(t, "stop_work")
+        )
     finally:
         voice.quit()
+
 
 def drive_noaudio(run: Path, st: dict[str, Any], proof: Proof) -> None:
     """No audio IO (lid closed) without closing the lid: the per-process launch
@@ -559,7 +697,11 @@ def drive_noaudio(run: Path, st: dict[str, Any], proof: Proof) -> None:
     voice = Voice(run, st, proof, [], "noaudio", ("-voice.simulateNoAudioIO", "YES"))
     voice.send({"type": "mute", "muted": True})
     error = voice.wait(lambda e: e.get("type") == "error", 60)
-    proof.check("Voice reports missing audio IO as a readable error line", error and "No audio input or output" in error.get("message", ""), error)
+    proof.check(
+        "Voice reports missing audio IO as a readable error line",
+        error and "No audio input or output" in error.get("message", ""),
+        error,
+    )
     try:
         code: Optional[int] = voice.proc.wait(15)
     except subprocess.TimeoutExpired:
@@ -567,14 +709,20 @@ def drive_noaudio(run: Path, st: dict[str, Any], proof: Proof) -> None:
         os.killpg(voice.proc.pid, signal.SIGTERM)
     proof.check("Voice exits with code 3 (audio unavailable), not a crash", code == 3, f"rc={code}")
     text = voice.stderr_path.read_text(errors="replace") if voice.stderr_path.exists() else ""
-    proof.check("no uncaught exception in Voice stderr", "Terminating app due to uncaught exception" not in text,
-                re.findall(r"reason: '([^']+)'", text))
+    proof.check(
+        "no uncaught exception in Voice stderr",
+        "Terminating app due to uncaught exception" not in text,
+        re.findall(r"reason: '([^']+)'", text),
+    )
+
 
 def seed_pack(run: Path, proof: Proof) -> list[dict[str, str]]:
     """Build the startup pack with the extension's own Conversation code in an isolated config dir."""
     cfg = run / "scratch/seed" / proof.dir.name
     cfg.mkdir(parents=True, exist_ok=True)
-    env = dict(os.environ, PI_VOICE_CONFIG=str(cfg), PV_PROJ=str(run / "scratch/proj"), PV_SRC=str(REPO / "pi-voice/src"))
+    env = dict(
+        os.environ, PI_VOICE_CONFIG=str(cfg), PV_PROJ=str(run / "scratch/proj"), PV_SRC=str(REPO / "pi-voice/src")
+    )
     out = subprocess.run(["node", str(SKILL_DIR / "scripts/seed-history.mjs")], env=env, capture_output=True, text=True)
     (proof.dir / "seed-history.stderr.txt").write_text(out.stderr)
     if out.returncode:
@@ -584,12 +732,15 @@ def seed_pack(run: Path, proof: Proof) -> list[dict[str, str]]:
     (proof.dir / "startup-pack.json").write_text(json.dumps(pack, indent=2) + "\n")
     return pack
 
+
 def drive_memory_voice(run: Path, st: dict[str, Any], proof: Proof) -> None:
     pack = seed_pack(run, proof)
     text = pack[0]["text"] if pack else ""
-    if not proof.check("pack is one user turn with Latest and a Pi result",
-                       len(pack) == 1 and pack[0]["role"] == "user" and "Latest:" in text and "[Pi result" in text,
-                       text[:300]):
+    if not proof.check(
+        "pack is one user turn with Latest and a Pi result",
+        len(pack) == 1 and pack[0]["role"] == "user" and "Latest:" in text and "[Pi result" in text,
+        text[:300],
+    ):
         return
     voice = Voice(run, st, proof, pack, "memory")
     try:
@@ -597,11 +748,14 @@ def drive_memory_voice(run: Path, st: dict[str, Any], proof: Proof) -> None:
             return
         t, reply = voice.say(
             "Without asking Pi, from what you remember: what did I name this project, and which files did Pi find? One sentence.",
-            ("spoken", "work"), 60)
+            ("spoken", "work"),
+            60,
+        )
         proof.check("Agent recalls the earlier call from the pack", mentions(reply, r"pelican"), reply)
         proof.check("recall did not hand off to Pi", not voice.after(t, "work"), voice.after(t, "work"))
     finally:
         voice.quit()
+
 
 def pi_drive_dirs(run: Path, proof_dir: Path) -> tuple[Path, Path]:
     """Pi sessions and shared-log config for one drive. Each Pi drive gets its own,
@@ -612,6 +766,7 @@ def pi_drive_dirs(run: Path, proof_dir: Path) -> tuple[Path, Path]:
     cfg.mkdir(parents=True, exist_ok=True)
     return sessions, cfg
 
+
 class PiTerminal:
     """Interactive Pi with this checkout's extension, isolated config, sessions and TMPDIR."""
 
@@ -619,10 +774,29 @@ class PiTerminal:
         self.run, self.proof = run, proof
         self.sessions, self.cfg = pi_drive_dirs(run, proof.dir)
         self.tmp = run / "scratch/tmp"
-        env = dict(os.environ, PI_VOICE_CONFIG=str(self.cfg), TMPDIR=str(self.tmp) + "/", VOICE_BIN=st["wrapper"],
-                   TERM="xterm-256color", PV_HISTORY_DUMP=str(proof.dir))
-        argv = ["pi", "--tui-mode", "regular", "--offline", "--no-mcp", "--session-dir", str(self.sessions),
-                "-na", "-ne", "-ns", "-np", "-e", str(EXTENSION)]
+        env = dict(
+            os.environ,
+            PI_VOICE_CONFIG=str(self.cfg),
+            TMPDIR=str(self.tmp) + "/",
+            VOICE_BIN=st["wrapper"],
+            TERM="xterm-256color",
+            PV_HISTORY_DUMP=str(proof.dir),
+        )
+        argv = [
+            "pi",
+            "--tui-mode",
+            "regular",
+            "--offline",
+            "--no-mcp",
+            "--session-dir",
+            str(self.sessions),
+            "-na",
+            "-ne",
+            "-ns",
+            "-np",
+            "-e",
+            str(EXTENSION),
+        ]
         proof.note("spawn", " ".join(argv))
         pid, fd = pty.fork()
         if pid == 0:
@@ -630,6 +804,7 @@ class PiTerminal:
             os.execvpe("pi", argv, env)
         import fcntl
         import termios
+
         fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 50, 200, 0, 0))
         self.pid, self.fd = pid, fd
         remember_child(run, pid, "pi", "pi")
@@ -697,7 +872,9 @@ class PiTerminal:
         """What Agent said aloud after shared-log row `row`. The shared log is written
         at once; Pi defers writing its session file until its first assistant message,
         so a call with no Pi turn never shows up there."""
-        return [{"row": r[0], "text": r[4]} for r in self.rows() if r[0] > row and r[2] == "assistant" and r[3] == "voice"]
+        return [
+            {"row": r[0], "text": r[4]} for r in self.rows() if r[0] > row and r[2] == "assistant" and r[3] == "voice"
+        ]
 
     def lease_voice_pid(self) -> Optional[int]:
         try:
@@ -773,6 +950,7 @@ class PiTerminal:
         except ChildProcessError:
             return True
 
+
 def drive_handoff_pi(run: Path, st: dict[str, Any], proof: Proof) -> None:
     pi = PiTerminal(run, st, proof)
     try:
@@ -781,27 +959,55 @@ def drive_handoff_pi(run: Path, st: dict[str, Any], proof: Proof) -> None:
             return
         k = pi.last_row()
         pi.type_line("Hi, reply with just the single word hello.")
-        proof.check("typed text reaches Agent and is spoken", pi.wait_for(lambda: pi.spoken_after(k), 45), pi.spoken_after(k))
+        proof.check(
+            "typed text reaches Agent and is spoken", pi.wait_for(lambda: pi.spoken_after(k), 45), pi.spoken_after(k)
+        )
         n, k = len(pi.entries()), pi.last_row()
         pi.type_line("Please have Pi list the files in the current working directory and tell me their names.")
-        job = pi.wait_for(lambda: next((e for e in pi.entries()[n:] if e.get("type") == "message"
-                                        and (e.get("message") or {}).get("role") == "user"
-                                        and "[Pi voice job id:" in pi.text_of(e)), None), 60)
-        proof.check("Pi receives the job message, marker last", job and JOB_MARKER.search(pi.text_of(job)),
-                    pi.text_of(job)[-200:] if job else None)
-        final = pi.wait_for(lambda: next((d for d in pi.spoken_after(k) if re.search(r"readme|main|notes", d["text"], re.I)), None), 240)
+        job = pi.wait_for(
+            lambda: next(
+                (
+                    e
+                    for e in pi.entries()[n:]
+                    if e.get("type") == "message"
+                    and (e.get("message") or {}).get("role") == "user"
+                    and "[Pi voice job id:" in pi.text_of(e)
+                ),
+                None,
+            ),
+            60,
+        )
+        proof.check(
+            "Pi receives the job message, marker last",
+            job and JOB_MARKER.search(pi.text_of(job)),
+            pi.text_of(job)[-200:] if job else None,
+        )
+        final = pi.wait_for(
+            lambda: next((d for d in pi.spoken_after(k) if re.search(r"readme|main|notes", d["text"], re.I)), None), 240
+        )
         proof.check("Pi's result is spoken back by Agent", final, final or pi.spoken_after(k))
         rows = pi.rows()
-        proof.check("shared log stores the [Pi handoff] brief", any(r[3] == "work" and r[4].startswith("[Pi handoff]") for r in rows),
-                    [r[4][:80] for r in rows])
-        proof.check("shared log stores the full [Pi result]", any(r[3] == "work" and r[4].startswith("[Pi result") for r in rows), "")
+        proof.check(
+            "shared log stores the [Pi handoff] brief",
+            any(r[3] == "work" and r[4].startswith("[Pi handoff]") for r in rows),
+            [r[4][:80] for r in rows],
+        )
+        proof.check(
+            "shared log stores the full [Pi result]",
+            any(r[3] == "work" and r[4].startswith("[Pi result") for r in rows),
+            "",
+        )
         journal = journal_events(run)
-        proof.check("job journal lands in the isolated TMPDIR", any(j.get("event") == "queued" for j in journal),
-                    [j.get("event") for j in journal])
+        proof.check(
+            "job journal lands in the isolated TMPDIR",
+            any(j.get("event") == "queued" for j in journal),
+            [j.get("event") for j in journal],
+        )
         pi.stop_voice("call")
     finally:
         pi.save()
         pi.close()
+
 
 def drive_memory_pi(run: Path, st: dict[str, Any], proof: Proof) -> None:
     pi = PiTerminal(run, st, proof)
@@ -820,17 +1026,22 @@ def drive_memory_pi(run: Path, st: dict[str, Any], proof: Proof) -> None:
         new = sorted(set(proof.dir.glob("voice-history.*.json")) - dumps_before)
         pack = json.loads(new[-1].read_text()) if new else []
         text = pack[0]["text"] if pack else ""
-        proof.check("call 2: Voice child got one dated user-role pack with call 1",
-                    len(pack) == 1 and pack[0]["role"] == "user" and "Pelican Harbor" in text and "Latest:" in text,
-                    text[:300])
+        proof.check(
+            "call 2: Voice child got one dated user-role pack with call 1",
+            len(pack) == 1 and pack[0]["role"] == "user" and "Pelican Harbor" in text and "Latest:" in text,
+            text[:300],
+        )
         k = pi.last_row()
         pi.type_line("Without asking Pi: what is this project called? One short sentence.")
-        recall = pi.wait_for(lambda: next((d for d in pi.spoken_after(k) if re.search(r"pelican", d["text"], re.I)), None), 45)
+        recall = pi.wait_for(
+            lambda: next((d for d in pi.spoken_after(k) if re.search(r"pelican", d["text"], re.I)), None), 45
+        )
         proof.check("call 2: Agent recalls call 1 after reconnect", recall, recall or pi.spoken_after(k))
         pi.stop_voice("call 2")
     finally:
         pi.save()
         pi.close()
+
 
 DRIVES: dict[tuple[str, str], Callable[[Path, dict[str, Any], Proof], None]] = {
     ("conversation", "voice"): drive_conversation,
@@ -844,6 +1055,7 @@ DRIVES: dict[tuple[str, str], Callable[[Path, dict[str, Any], Proof], None]] = {
     ("memory", "pi"): drive_memory_pi,
     ("noaudio", "voice"): drive_noaudio,
 }
+
 
 def cmd_drive(args: argparse.Namespace) -> None:
     run = run_dir(args.run)
@@ -861,6 +1073,7 @@ def cmd_drive(args: argparse.Namespace) -> None:
         proof.check("drive ran to completion", False, repr(error))
     proof.finish()
 
+
 def cmd_env(args: argparse.Namespace) -> None:
     run = run_dir(args.run)
     st = load_state(run)
@@ -871,13 +1084,16 @@ def cmd_env(args: argparse.Namespace) -> None:
     print(f"export PV_PROJ={run / 'scratch/proj'}")
     print(f"export PV_SESSIONS={run / 'scratch/sessions'}")
 
+
 def cmd_cleanup(args: argparse.Namespace) -> None:
     run = run_dir(args.run)
     st = load_state(run)
     actions = []
     for child in st.get("children", []):
         if alive(child["pid"]):
-            actions.append(stop_group(child["pgid"], f"{child['kind']} {child['pid']}", (child["match"], str(VOICE_BIN))))
+            actions.append(
+                stop_group(child["pgid"], f"{child['kind']} {child['pid']}", (child["match"], str(VOICE_BIN)))
+            )
     try:
         lease = json.loads((run / "scratch/tmp/pi-voice.lease.json").read_text())
         pid = int(lease["voicePid"])
@@ -895,23 +1111,37 @@ def cmd_cleanup(args: argparse.Namespace) -> None:
         time.sleep(0.2)
     shutil.rmtree(run / "scratch", ignore_errors=True)
     kept = sorted(str(p.relative_to(run)) for p in run.rglob("*") if p.is_file())
-    report = {"actions": actions, "port": st["port"], "port_free": port_free, "scratch_removed": not (run / "scratch").exists(), "kept": kept}
+    report = {
+        "actions": actions,
+        "port": st["port"],
+        "port_free": port_free,
+        "scratch_removed": not (run / "scratch").exists(),
+        "kept": kept,
+    }
     (run / "evidence" / f"cleanup-{stamp()}.json").write_text(json.dumps(report, indent=2) + "\n")
     for action in actions:
         print(action)
-    print(f"port {st['port']} free: {port_free}; scratch removed; evidence kept in {run / 'evidence'} and {run / 'logs'}")
+    print(
+        f"port {st['port']} free: {port_free}; scratch removed; evidence kept in {run / 'evidence'} and {run / 'logs'}"
+    )
     sys.exit(0 if port_free else 1)
 
+
 def main() -> None:
-    parser = argparse.ArgumentParser(prog="pv.py", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = argparse.ArgumentParser(
+        prog="pv.py", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     sub = parser.add_subparsers(dest="cmd", required=True)
     launch = sub.add_parser("launch", help="start an isolated backend on its own port")
     launch.add_argument("--port", type=int, default=0)
     launch.add_argument("--build", action="store_true", help="rebuild Voice.app first")
     launch.add_argument("--timeout", type=int, default=420)
     launch.set_defaults(fn=cmd_launch)
-    for name, fn, text in (("doctor", cmd_doctor, "is this run worth driving?"), ("cleanup", cmd_cleanup, "stop what this run started, keep evidence"),
-                           ("env", cmd_env, "print exports for manual drives")):
+    for name, fn, text in (
+        ("doctor", cmd_doctor, "is this run worth driving?"),
+        ("cleanup", cmd_cleanup, "stop what this run started, keep evidence"),
+        ("env", cmd_env, "print exports for manual drives"),
+    ):
         p = sub.add_parser(name, help=text)
         p.add_argument("--run")
         p.set_defaults(fn=fn)
@@ -922,6 +1152,7 @@ def main() -> None:
     drive.set_defaults(fn=cmd_drive)
     args = parser.parse_args()
     args.fn(args)
+
 
 if __name__ == "__main__":
     main()
