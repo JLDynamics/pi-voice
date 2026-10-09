@@ -24,8 +24,8 @@ uv sync                       # install into this project's own .venv
 ./run-browser.sh              # start the voice backend on :8766 (refuses a busy port)
 ./run-browser.sh --reuse-running  # keep current service, TERM any stale/foreign/unknown/hung Chatbot service; Voice.app launches this way
 
-uv run ruff check src tests
-uv run ruff format --check src tests   # CI checks formatting; README omits this
+uv run ruff check src tests .cursor/skills
+uv run ruff format --check src tests .cursor/skills   # CI checks formatting; README omits this
 uv run mypy src
 uv run python -c "import nltk; nltk.download('punkt_tab')"  # required for local pytest
 uv run pytest -q

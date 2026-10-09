@@ -10,7 +10,8 @@ from pathlib import Path
 
 import pytest
 
-PV_PATH = Path(__file__).resolve().parents[1] / ".cursor/skills/verify-pi-voice/scripts/pv.py"
+ROOT = Path(__file__).resolve().parents[1]
+PV_PATH = ROOT / ".cursor/skills/verify-pi-voice/scripts/pv.py"
 
 
 @pytest.fixture(scope="module")
@@ -65,3 +66,10 @@ def test_pi_close_survives_an_exited_unreaped_child(pv, tmp_path):
         os.close(master)
     with pytest.raises(ChildProcessError):
         os.waitpid(pid, os.WNOHANG)
+
+
+def test_ci_lints_and_formats_the_skill_scripts():
+    """pv.py is code agents run and edit; CI must lint and format-check it."""
+    ci = (ROOT / ".github/workflows/ci.yml").read_text()
+    assert "uv run ruff check src/ tests/ .cursor/skills/" in ci
+    assert "uv run ruff format --check src/ tests/ .cursor/skills/" in ci
