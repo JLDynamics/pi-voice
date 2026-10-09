@@ -1,6 +1,6 @@
 # Agent-friendly pi-voice: refactor plan
 
-Status: phases 1, 2a, 2b, 2c implemented and committed locally. Everything after the user's speed override (U5 tests onward) is UNTESTED; a full test run is required before merge (see "Required before merge").
+Status: phases 1, 2a, 2b and 2c are done and verified by the final full run on 2026-10-09 (all suites, 11/11 contract mutations, and 11/11 live drives VERIFIED). See "Final verification".
 Process: figure-it-out Phase A (frame) and Phase B (design). Decision trail: [`decisions.tsv`](decisions.tsv).
 
 ## Goal
@@ -131,9 +131,14 @@ Open:
 
 All node tests, tsc, full pytest plus ruff check/format plus mypy, `macos/Voice/scripts/test.sh` and `build.sh`, `scripts/check-contracts.sh --mutate`, and the full `pv.py` drive matrix (including `drive pack --via voice` and `noaudio`).
 
+## Final verification (2026-10-09)
+
+- Fixed during the run: `check-contracts.sh` had a stale `speak` mutation literal after U6 (e988d16).
+- Added: the patch script supports Pi 1.1.0 (0f161be); a test for a user line without text (e9aa831); a docs drift test and D6 guard (3c20801).
+- Result at 3c20801: node 138/138, tsc, Swift test.sh, build.sh, ruff, ruff format, mypy, pytest 624, 11/11 mutations caught, and drives conversation/memory via backend, conversation/handoff/steer/stop/memory/noaudio/pack via voice, and handoff/memory via pi all VERIFIED.
+
 ## Open items
 
-- `scripts/patch-pi-native-fold.mjs` still targets the Pi 0.87.1 bundle hash and does not patch Pi 1.1.0.
+- `patch-pi-native-fold.mjs` supports 1.1.0 but was verified only on temp copies. The interactive fold and click behaviour in a real Pi terminal has not been eyeballed.
 - A lid-closed hardware check of the audio failure path has not been run (only the simulated `-voice.simulateNoAudioIO`).
-- U6 behaviour change (a `user` line with no text is ignored) needs the user's OK.
-- D6 and the CLAUDE.md drift test from U10 have no automated guard yet.
+- U8 pure-logic extraction (event decode and tool dispatch decisions as unit-tested functions) was not done.
