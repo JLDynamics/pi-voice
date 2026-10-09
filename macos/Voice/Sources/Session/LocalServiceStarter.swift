@@ -54,8 +54,17 @@ final class LocalServiceStarter {
             let (data, response) = try await URLSession.shared.data(for: request)
             let code = (response as? HTTPURLResponse)?.statusCode ?? 0
             return (code, try? JSONSerialization.jsonObject(with: data) as? [String: Any])
-        } catch { return nil }
+        } catch {
+            // Expected while the backend starts; log each distinct failure once.
+            let reason = "\(url.path): \(error.localizedDescription)"
+            if loggedFetchFailures.insert(reason).inserted {
+                NSLog("[LocalServiceStarter] health fetch failed %@", reason)
+            }
+            return nil
+        }
     }
+
+    private var loggedFetchFailures = Set<String>()
 
     /// Whether a health payload describes this checkout's current code.
     /// Older servers report no fingerprint, so they cannot be current.

@@ -338,22 +338,34 @@ struct PiJobTracker {
     /// Append one JSON line, trimming the file back to half once it passes
     /// maxBytes. A diagnostic log ("what did Pi say earlier?"), not the
     /// re-read path — finished text is served from memory.
+    /// First journal write failure is logged; later ones stay quiet (a full
+    /// or read-only TMPDIR fails every write the same way).
+    nonisolated(unsafe) private static var journalFailureLogged = false
+
     static func appendJournal(directory: URL, line: String, maxBytes: Int = 262_144) {
         guard !line.isEmpty else { return }
         let url = directory.appendingPathComponent(journalFileName)
         let data = Data((line + "\n").utf8)
-        guard FileManager.default.fileExists(atPath: url.path) else {
-            try? data.write(to: url)
-            return
+        do {
+            guard FileManager.default.fileExists(atPath: url.path) else {
+                try data.write(to: url)
+                return
+            }
+            let handle = try FileHandle(forWritingTo: url)
+            defer { try? handle.close() }
+            try handle.seekToEnd()
+            try handle.write(contentsOf: data)
+            let size = try handle.offset()
+            guard size > maxBytes else { return }
+            let all = try Data(contentsOf: url)
+            guard all.count > maxBytes else { return }
+            let tail = all.suffix(maxBytes / 2)
+            guard let newline = tail.firstIndex(of: 0x0A) else { return }
+            try Data(tail[tail.index(after: newline)...]).write(to: url)
+        } catch {
+            guard !journalFailureLogged else { return }
+            journalFailureLogged = true
+            NSLog("[PiJob] journal write failed at %@: %@", url.path, error.localizedDescription)
         }
-        guard let handle = try? FileHandle(forWritingTo: url) else { return }
-        defer { try? handle.close() }
-        _ = try? handle.seekToEnd()
-        try? handle.write(contentsOf: data)
-        guard let size = try? handle.offset(), size > maxBytes,
-              let all = try? Data(contentsOf: url), all.count > maxBytes else { return }
-        let tail = all.suffix(maxBytes / 2)
-        guard let newline = tail.firstIndex(of: 0x0A) else { return }
-        try? Data(tail[tail.index(after: newline)...]).write(to: url)
     }
 }

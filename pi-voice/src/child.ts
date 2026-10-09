@@ -64,6 +64,8 @@ export type VoiceHistoryTurn = { role: "user" | "assistant"; text: string };
 export class VoiceChild {
   readonly pid: ChildPid;
   private readonly proc: ChildProcess;
+  /** Voice's stderr log; the extension adds its own job lines here (see `note`). */
+  private log?: NodeJS.WritableStream;
 
   private constructor(pid: ChildPid, proc: ChildProcess) {
     this.pid = pid;
@@ -85,6 +87,7 @@ export class VoiceChild {
     writeLease({ ownerPid: process.pid, voicePid: proc.pid, executable: bin });
     const log = createWriteStream(stderrLogPath(pid), { flags: "a" });
     proc.stderr?.pipe(log);
+    child.log = log;
     let leftover = "";
     const ignoredReasons = new Set<string>();
     proc.stdout?.setEncoding("utf8");
@@ -95,11 +98,15 @@ export class VoiceChild {
         const line = leftover.slice(0, nl);
         leftover = leftover.slice(nl + 1);
         const decoded = decodeLine(line);
-        if (!("ignored" in decoded)) onEvent(decoded);
+        if (!("ignored" in decoded)) {
+          if (decoded.tag === "work") child.note(`job ${decoded.id} work received`);
+          else if (decoded.tag === "stopWork") child.note("stop_work received");
+          onEvent(decoded);
+        }
         else if (line.trim() && !ignoredReasons.has(decoded.ignored)) {
           // One line per distinct reason, next to Voice's own stderr.
           ignoredReasons.add(decoded.ignored);
-          log.write(`[pi-voice] ignored Voice stdout line: ${decoded.ignored}\n`);
+          child.note(`ignored Voice stdout line: ${decoded.ignored}`);
         }
         nl = leftover.indexOf("\n");
       }
@@ -128,10 +135,12 @@ export class VoiceChild {
   }
 
   postResult(id: WorkId, speak: ShortResult, full: string): void {
+    this.note(`job ${id} result sent (${full.length} chars)`);
     this.send(toVoice.result(id, speak, full));
   }
 
   sendJobUpdate(id: WorkId, status: JobUpdateStatus, note?: string): void {
+    this.note(`job ${id} ${status}${note ? `: ${note.slice(0, 120)}` : ""}`);
     this.send(toVoice.jobUpdate(id, status, note));
   }
 
@@ -152,6 +161,14 @@ export class VoiceChild {
     } catch {
       // already gone
     }
+  }
+
+  /**
+   * One extension line in Voice's stderr log, so a job id is traceable across
+   * this log, Voice's own `[PiJob]` lines, and the `pi-voice.jobs.jsonl` journal.
+   */
+  private note(line: string): void {
+    this.log?.write(`${new Date().toISOString()} [pi-voice] ${line}\n`);
   }
 
   private send(msg: HeadlessIn): void {

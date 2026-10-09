@@ -83,7 +83,8 @@ Proof standards: drive the user path (typed or spoken turn, `/voice`), capture t
 ## Cleanup
 
 ```bash
-$SKILL/scripts/pv.py cleanup
+$SKILL/scripts/pv.py logs --job <work-id>    # bundle every log; list lines naming that job id
+$SKILL/scripts/pv.py cleanup                   # bundles logs first, then removes scratch
 ```
 
 Stops only what the run started: drive children recorded in `state.json` (by process group, after re-checking the command), any Voice pid in the run's lease file whose command is this checkout's build, and the launcher's process group (`run-browser.sh`, `run-openrouter.sh`, `chatbot serve`). It never kills by process name. It waits for the port to free, deletes `scratch/`, and keeps `logs/` and `evidence/`, writing `evidence/cleanup-<stamp>.json` with what it stopped and what it kept. Run it after every run, including failed ones.
@@ -102,3 +103,4 @@ Stops only what the run started: drive children recorded in `state.json` (by pro
 - Model replies vary. Checks match loose content (`hello`, `4|four`, file names). One failing content check is a reason to read `drive.log`, not to loosen the regex.
 - Port 8766 belongs to the user. A launcher or `/voice` from any checkout on 8766 restarts `stale` or `foreign` services; this skill never uses it.
 - A Swift change needs `launch --build`; doctor fails on a stale build. A backend change needs a fresh `launch` (doctor fails on `stale`).
+- Tracing one handoff: the work id appears in the journal (`pi-voice.jobs.jsonl`), in Voice's stderr log as `[PiJob] {...}` lines, and in the same log as extension lines `[pi-voice] job <id> ...`; ignored stdio lines are logged there once per reason. `pv.py logs --job <id>` collects them.

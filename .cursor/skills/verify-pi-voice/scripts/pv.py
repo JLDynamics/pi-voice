@@ -1135,6 +1135,49 @@ def cmd_env(args: argparse.Namespace) -> None:
     print(f"export PV_SESSIONS={run / 'scratch/sessions'}")
 
 
+LOG_GLOBS = (
+    "logs/*.log",
+    "scratch/tmp/pi-voice.*.stderr.log",
+    "scratch/tmp/pi-voice.jobs.jsonl",
+    "evidence/*/drive.log",
+    "evidence/*/*.ndjson",
+    "evidence/*/jobs-journal.json",
+    "evidence/*/pi-pty.log",
+)
+
+
+def collect_logs(run: Path, job_id: Optional[str] = None) -> Path:
+    """Copy every log of a run into one folder with an index. With a job id, also
+    write the lines that mention it (extension, Voice [PiJob] and journal lines)."""
+    out = run / "evidence" / f"logs-{stamp()}"
+    out.mkdir(parents=True, exist_ok=True)
+    index, hits = [], []
+    for pattern in LOG_GLOBS:
+        for src in sorted(run.glob(pattern)):
+            if not src.is_file() or out in src.parents:
+                continue
+            rel = src.relative_to(run)
+            dest = out / str(rel).replace("/", "__")
+            shutil.copyfile(src, dest)
+            index.append(f"{src.stat().st_size:>10}  {rel}")
+            if job_id:
+                for n, line in enumerate(src.read_text(errors="replace").splitlines(), 1):
+                    if job_id in line:
+                        hits.append(f"{rel}:{n}: {line[:400]}")
+    (out / "INDEX.txt").write_text("\n".join(index) + "\n")
+    if job_id:
+        (out / f"job-{job_id}.txt").write_text("\n".join(hits) + "\n")
+    return out
+
+
+def cmd_logs(args: argparse.Namespace) -> None:
+    run = run_dir(args.run)
+    out = collect_logs(run, args.job)
+    print(f"logs bundled in {out} ({len(list(out.iterdir())) - 1} files; see INDEX.txt)")
+    if args.job:
+        print((out / f"job-{args.job}.txt").read_text(), end="")
+
+
 def cmd_cleanup(args: argparse.Namespace) -> None:
     run = run_dir(args.run)
     st = load_state(run)
@@ -1159,6 +1202,8 @@ def cmd_cleanup(args: argparse.Namespace) -> None:
             port_free = True
             break
         time.sleep(0.2)
+    bundle = collect_logs(run)  # before scratch goes: it holds the extension's stderr logs and the journal
+    actions.append(f"logs bundled in {bundle.relative_to(run)}")
     shutil.rmtree(run / "scratch", ignore_errors=True)
     kept = sorted(str(p.relative_to(run)) for p in run.rglob("*") if p.is_file())
     report = {
@@ -1195,6 +1240,10 @@ def main() -> None:
         p = sub.add_parser(name, help=text)
         p.add_argument("--run")
         p.set_defaults(fn=fn)
+    logs = sub.add_parser("logs", help="bundle every log of a run into evidence/logs-<stamp>")
+    logs.add_argument("--run")
+    logs.add_argument("--job", help="also list every line that mentions this job id")
+    logs.set_defaults(fn=cmd_logs)
     drive = sub.add_parser("drive", help="drive one feature and record evidence")
     drive.add_argument("feature", choices=sorted({f for f, _ in DRIVES}))
     drive.add_argument("--via", choices=["backend", "voice", "pi"], default="voice")
