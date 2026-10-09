@@ -33,9 +33,9 @@ Isolation it sets up:
 
 - Port: its own (18766 and up). The user's Voice.app and backend stay on 8766 and are never probed beyond an informational `lsof`.
 - Voice.app: `scratch/bin/voice` execs this checkout's build with `-voice.wsUrl ws://127.0.0.1:<port>/v1/realtime`. That argument lives only in the process. `defaults write` would retarget the user's installed Voice.app, so never use it.
-- Shared memory: `PI_VOICE_CONFIG=<run>/scratch/cfg` (never `~/.config/pi-voice`).
+- Shared memory: each Pi drive uses `PI_VOICE_CONFIG=<run>/scratch/pi/<drive>/cfg` and each seeded pack `<run>/scratch/seed/<drive>` (never `~/.config/pi-voice`), so one drive's conversation never becomes the next drive's startup pack. `scratch/cfg` is for manual runs via `pv.py env`.
 - Lease, stderr logs, job journal: `TMPDIR=<run>/scratch/tmp/`.
-- Pi: `--session-dir <run>/scratch/sessions --offline --no-mcp -na -ne -ns -np -e <checkout>/pi-voice/src/index.ts`, started in the fixture folder. Pi still reads its own auth and default model from `~/.pi/agent`. The harness writes nothing there, and `--offline --no-mcp` skip Pi's startup network and MCP work, but Pi may still touch its own caches.
+- Pi: `--session-dir <run>/scratch/pi/<drive>/sessions --offline --no-mcp -na -ne -ns -np -e <checkout>/pi-voice/src/index.ts`, started in the fixture folder. Pi still reads its own auth and default model from `~/.pi/agent`. The harness writes nothing there, and `--offline --no-mcp` skip Pi's startup network and MCP work, but Pi may still touch its own caches.
 - Secrets: the launcher sources `~/.config/chatbot/env` itself. Never print that file, process environments (`ps -E`), or auth files.
 
 ## Doctor

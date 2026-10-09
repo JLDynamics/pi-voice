@@ -547,7 +547,7 @@ def drive_stop(run: Path, st: dict[str, Any], proof: Proof) -> None:
 
 def seed_pack(run: Path, proof: Proof) -> list[dict[str, str]]:
     """Build the startup pack with the extension's own Conversation code in an isolated config dir."""
-    cfg = run / "scratch/cfg-seed"
+    cfg = run / "scratch/seed" / proof.dir.name
     cfg.mkdir(parents=True, exist_ok=True)
     env = dict(os.environ, PI_VOICE_CONFIG=str(cfg), PV_PROJ=str(run / "scratch/proj"), PV_SRC=str(REPO / "pi-voice/src"))
     out = subprocess.run(["node", str(SKILL_DIR / "scripts/seed-history.mjs")], env=env, capture_output=True, text=True)
@@ -578,13 +578,21 @@ def drive_memory_voice(run: Path, st: dict[str, Any], proof: Proof) -> None:
     finally:
         voice.quit()
 
+def pi_drive_dirs(run: Path, proof_dir: Path) -> tuple[Path, Path]:
+    """Pi sessions and shared-log config for one drive. Each Pi drive gets its own,
+    so one drive's conversation never becomes the next drive's startup pack."""
+    own = run / "scratch/pi" / proof_dir.name
+    sessions, cfg = own / "sessions", own / "cfg"
+    sessions.mkdir(parents=True, exist_ok=True)
+    cfg.mkdir(parents=True, exist_ok=True)
+    return sessions, cfg
+
 class PiTerminal:
     """Interactive Pi with this checkout's extension, isolated config, sessions and TMPDIR."""
 
     def __init__(self, run: Path, st: dict[str, Any], proof: Proof):
         self.run, self.proof = run, proof
-        self.sessions = run / "scratch/sessions"
-        self.cfg = run / "scratch/cfg"
+        self.sessions, self.cfg = pi_drive_dirs(run, proof.dir)
         self.tmp = run / "scratch/tmp"
         env = dict(os.environ, PI_VOICE_CONFIG=str(self.cfg), TMPDIR=str(self.tmp) + "/", VOICE_BIN=st["wrapper"],
                    TERM="xterm-256color", PV_HISTORY_DUMP=str(proof.dir))
@@ -656,10 +664,15 @@ class PiTerminal:
             return "".join(p.get("text", "") for p in content if isinstance(p, dict) and p.get("type") == "text")
         return ""
 
-    def spoken_after(self, n: int) -> list[dict[str, Any]]:
-        return [e["data"] for e in self.entries()[n:]
-                if e.get("type") == "custom" and e.get("customType") == "pi-voice-face"
-                and (e.get("data") or {}).get("kind") in ("spoken", "spoken-final")]
+    def last_row(self) -> int:
+        rows = self.rows()
+        return rows[-1][0] if rows else 0
+
+    def spoken_after(self, row: int) -> list[dict[str, Any]]:
+        """What Agent said aloud after shared-log row `row`. The shared log is written
+        at once; Pi defers writing its session file until its first assistant message,
+        so a call with no Pi turn never shows up there."""
+        return [{"row": r[0], "text": r[4]} for r in self.rows() if r[0] > row and r[2] == "assistant" and r[3] == "voice"]
 
     def lease_voice_pid(self) -> Optional[int]:
         try:
@@ -713,15 +726,27 @@ class PiTerminal:
             except OSError:
                 break
             self.pump(1)
-        if alive(self.pid):
-            self.pump(2)
-        if alive(self.pid):
-            os.killpg(self.pid, signal.SIGTERM)
-        try:
-            os.waitpid(self.pid, 0)
-        except ChildProcessError:
-            pass
+        # Reap before signalling: an exited but unreaped Pi still passes alive(),
+        # and killpg on a zombie-only group fails with EPERM on macOS.
+        deadline = time.time() + 3
+        while time.time() < deadline and not self._reaped():
+            self.pump(0.5)
+        if not self._reaped():
+            try:
+                os.killpg(self.pid, signal.SIGTERM)
+            except (ProcessLookupError, PermissionError):
+                pass
+            try:
+                os.waitpid(self.pid, 0)
+            except ChildProcessError:
+                pass
         self.screen.close()
+
+    def _reaped(self) -> bool:
+        try:
+            return os.waitpid(self.pid, os.WNOHANG)[0] != 0
+        except ChildProcessError:
+            return True
 
 def drive_handoff_pi(run: Path, st: dict[str, Any], proof: Proof) -> None:
     pi = PiTerminal(run, st, proof)
@@ -729,18 +754,18 @@ def drive_handoff_pi(run: Path, st: dict[str, Any], proof: Proof) -> None:
         pi.pump(6)
         if not pi.start_voice("call"):
             return
-        n = len(pi.entries())
+        k = pi.last_row()
         pi.type_line("Hi, reply with just the single word hello.")
-        proof.check("typed text reaches Agent and is spoken", pi.wait_for(lambda: pi.spoken_after(n), 45), pi.spoken_after(n))
-        n = len(pi.entries())
+        proof.check("typed text reaches Agent and is spoken", pi.wait_for(lambda: pi.spoken_after(k), 45), pi.spoken_after(k))
+        n, k = len(pi.entries()), pi.last_row()
         pi.type_line("Please have Pi list the files in the current working directory and tell me their names.")
         job = pi.wait_for(lambda: next((e for e in pi.entries()[n:] if e.get("type") == "message"
                                         and (e.get("message") or {}).get("role") == "user"
                                         and "[Pi voice job id:" in pi.text_of(e)), None), 60)
         proof.check("Pi receives the job message, marker last", job and JOB_MARKER.search(pi.text_of(job)),
                     pi.text_of(job)[-200:] if job else None)
-        final = pi.wait_for(lambda: next((d for d in pi.spoken_after(n) if re.search(r"readme|main|notes", d.get("text", ""), re.I)), None), 240)
-        proof.check("Pi's result is spoken back by Agent", final, final or pi.spoken_after(n))
+        final = pi.wait_for(lambda: next((d for d in pi.spoken_after(k) if re.search(r"readme|main|notes", d["text"], re.I)), None), 240)
+        proof.check("Pi's result is spoken back by Agent", final, final or pi.spoken_after(k))
         rows = pi.rows()
         proof.check("shared log stores the [Pi handoff] brief", any(r[3] == "work" and r[4].startswith("[Pi handoff]") for r in rows),
                     [r[4][:80] for r in rows])
@@ -759,9 +784,9 @@ def drive_memory_pi(run: Path, st: dict[str, Any], proof: Proof) -> None:
         pi.pump(6)
         if not pi.start_voice("call 1"):
             return
-        n = len(pi.entries())
+        k = pi.last_row()
         pi.type_line("Please remember that this project is called Pelican Harbor. Just say okay.")
-        proof.check("call 1: Agent answers", pi.wait_for(lambda: pi.spoken_after(n), 45), pi.spoken_after(n))
+        proof.check("call 1: Agent answers", pi.wait_for(lambda: pi.spoken_after(k), 45), pi.spoken_after(k))
         pi.pump(3)
         pi.stop_voice("call 1")
         dumps_before = set(proof.dir.glob("voice-history.*.json"))
@@ -773,10 +798,10 @@ def drive_memory_pi(run: Path, st: dict[str, Any], proof: Proof) -> None:
         proof.check("call 2: Voice child got one dated user-role pack with call 1",
                     len(pack) == 1 and pack[0]["role"] == "user" and "Pelican Harbor" in text and "Latest:" in text,
                     text[:300])
-        n = len(pi.entries())
+        k = pi.last_row()
         pi.type_line("Without asking Pi: what is this project called? One short sentence.")
-        recall = pi.wait_for(lambda: next((d for d in pi.spoken_after(n) if re.search(r"pelican", d.get("text", ""), re.I)), None), 45)
-        proof.check("call 2: Agent recalls call 1 after reconnect", recall, recall or pi.spoken_after(n))
+        recall = pi.wait_for(lambda: next((d for d in pi.spoken_after(k) if re.search(r"pelican", d["text"], re.I)), None), 45)
+        proof.check("call 2: Agent recalls call 1 after reconnect", recall, recall or pi.spoken_after(k))
         pi.stop_voice("call 2")
     finally:
         pi.save()
