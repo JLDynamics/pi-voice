@@ -716,12 +716,17 @@ def drive_noaudio(run: Path, st: dict[str, Any], proof: Proof) -> None:
     )
 
 
-def seed_pack(run: Path, proof: Proof) -> list[dict[str, str]]:
-    """Build the startup pack with the extension's own Conversation code in an isolated config dir."""
-    cfg = run / "scratch/seed" / proof.dir.name
+def seed_pack(run: Path, proof: Proof, seed: str = "memory") -> list[dict[str, str]]:
+    """Build the startup pack with the extension's own Conversation code in an isolated config dir.
+    `seed` picks the synthetic earlier call in seed-history.mjs ("memory" or "repeat")."""
+    cfg = run / "scratch/seed" / proof.dir.name / seed
     cfg.mkdir(parents=True, exist_ok=True)
     env = dict(
-        os.environ, PI_VOICE_CONFIG=str(cfg), PV_PROJ=str(run / "scratch/proj"), PV_SRC=str(REPO / "pi-voice/src")
+        os.environ,
+        PI_VOICE_CONFIG=str(cfg),
+        PV_PROJ=str(run / "scratch/proj"),
+        PV_SRC=str(REPO / "pi-voice/src"),
+        PV_SEED=seed,
     )
     out = subprocess.run(["node", str(SKILL_DIR / "scripts/seed-history.mjs")], env=env, capture_output=True, text=True)
     (proof.dir / "seed-history.stderr.txt").write_text(out.stderr)
@@ -746,6 +751,12 @@ def drive_memory_voice(run: Path, st: dict[str, Any], proof: Proof) -> None:
     try:
         if not voice.start(muted=True):
             return
+        _, live = voice.say("Reply with just the single word banana.", ("spoken", "work"), 60)
+        proof.check(
+            "first turn after the pack is answered as live, not as more background",
+            re.fullmatch(r"\W*banana\W*", (live or {}).get("text", ""), re.I),
+            live,
+        )
         t, reply = voice.say(
             "Without asking Pi, from what you remember: what did I name this project, and which files did Pi find? One sentence.",
             ("spoken", "work"),
@@ -755,6 +766,32 @@ def drive_memory_voice(run: Path, st: dict[str, Any], proof: Proof) -> None:
         proof.check("recall did not hand off to Pi", not voice.after(t, "work"), voice.after(t, "work"))
     finally:
         voice.quit()
+
+
+PACK_TRIALS = 3
+
+
+def drive_pack_voice(run: Path, st: dict[str, Any], proof: Proof) -> None:
+    """The first live turn after a startup pack is answered, not taken for more background.
+    Several fresh calls, because the failure was a model judgement (0/14 obeyed before the fix)."""
+    pack = seed_pack(run, proof, "repeat")
+    text = pack[0]["text"] if pack else ""
+    if not proof.check("pack built from the repeat seed", len(pack) == 1 and "Previous:" in text, text[:300]):
+        return
+    proof.check("pack ends with the end-of-background line", "[End of background" in text[-120:], text[-120:])
+    for i in range(PACK_TRIALS):
+        voice = Voice(run, st, proof, pack, f"pack{i}")
+        try:
+            if not voice.start(muted=True):
+                return
+            _, live = voice.say("Reply with just the single word banana.", ("spoken", "work"), 60)
+            proof.check(
+                f"call {i + 1}/{PACK_TRIALS}: first turn after the pack is answered as live",
+                re.fullmatch(r"\W*banana\W*", (live or {}).get("text", ""), re.I),
+                live,
+            )
+        finally:
+            voice.quit()
 
 
 def pi_drive_dirs(run: Path, proof_dir: Path) -> tuple[Path, Path]:
@@ -1031,6 +1068,18 @@ def drive_memory_pi(run: Path, st: dict[str, Any], proof: Proof) -> None:
             len(pack) == 1 and pack[0]["role"] == "user" and "Pelican Harbor" in text and "Latest:" in text,
             text[:300],
         )
+        proof.check(
+            "call 2: pack ends with the end-of-background line", "[End of background" in text[-120:], text[-120:]
+        )
+        k = pi.last_row()
+        pi.type_line("Reply with just the single word banana.")
+        live = pi.wait_for(lambda: pi.spoken_after(k), 45)
+        proof.check(
+            "call 2: first turn after the pack is answered as live",
+            live and re.fullmatch(r"\W*banana\W*", live[0]["text"], re.I),
+            live,
+        )
+        pi.pump(2)
         k = pi.last_row()
         pi.type_line("Without asking Pi: what is this project called? One short sentence.")
         recall = pi.wait_for(
@@ -1054,6 +1103,7 @@ DRIVES: dict[tuple[str, str], Callable[[Path, dict[str, Any], Proof], None]] = {
     ("memory", "voice"): drive_memory_voice,
     ("memory", "pi"): drive_memory_pi,
     ("noaudio", "voice"): drive_noaudio,
+    ("pack", "voice"): drive_pack_voice,
 }
 
 

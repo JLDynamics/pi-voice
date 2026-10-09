@@ -6,6 +6,7 @@ import {
   isDelegationChatter,
   leftoverTurn,
   speaker,
+  PACK_END,
   startupPack,
   withoutBrief,
   WORK_RESULT_CHARS,
@@ -137,6 +138,24 @@ describe("startupPack", () => {
     assert.match(text, /2026-10-08T18:02:00.000Z Pi: \[Pi result "AI news"\] three headlines/);
     assert.equal(speaker({ role: "assistant", kind: "work", text: handoffHistoryTurn("x").text }), "Agent");
     assert.equal(speaker({ role: "assistant", kind: "work", text: workHistoryTurn("x", "y").text }), "Pi");
+  });
+
+  it("closes the pack so the next user turn reads as live, not more background", () => {
+    // Without the closing line the model often answered the first real turn
+    // after a pack with "I'm here whenever you're ready" (0/14 explicit asks
+    // obeyed in a live probe), or spoke its reasoning about the background.
+    const pack = startupPack([
+      row("assistant", "voice", "Hello.", "2026-10-08T18:00:00.000Z"),
+      row("user", "voice", "Hi, reply with just hello.", "2026-10-08T17:59:00.000Z"),
+    ], 100_000);
+    assert.ok(pack[0].text.endsWith(`\n\n${PACK_END}`), pack[0].text);
+    const withPrevious = startupPack([
+      row("assistant", "voice", "newest answer", "2026-10-08T18:00:00.000Z"),
+      row("user", "voice", "newest question", "2026-10-08T17:59:00.000Z"),
+      row("user", "voice", "older question", "2026-10-08T17:00:00.000Z"),
+    ], 100_000);
+    assert.ok(withPrevious[0].text.endsWith(PACK_END), "end line comes after Previous too");
+    assert.match(PACK_END, /user talking now/);
   });
 
   it("omits an empty Previous section and an empty log", () => {
