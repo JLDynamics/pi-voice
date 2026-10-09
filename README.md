@@ -17,7 +17,7 @@ Audio modes are set via the `voice.audioMode` UserDefaults key (default `automat
 - [uv](https://docs.astral.sh/uv/)
 - An OpenRouter key
 - The [siri-tts](https://github.com/maximilianromer/siri-tts-cli) binary installed at `~/.local/bin/siri-tts` (or specified via `SIRI_TTS_BIN`)
-- For `/voice`: Pi 0.86 with `pi-voice/` loaded as an extension (`package.json` `pi.extensions`), running Node ≥22.18
+- For `/voice`: Pi 1.1 or later 1.x with `pi-voice/` loaded as an extension (`package.json` `pi.extensions`), running Node ≥22.18
 
 ## Install and run
 
