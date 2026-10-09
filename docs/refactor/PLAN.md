@@ -1,6 +1,6 @@
 # Agent-friendly pi-voice: refactor plan
 
-Status: phase 1 done (verification skill, one bug fix, this plan). Phase 2 waits for review.
+Status: phase 1 done; phase 2a done (U1, U2, U3, U4, and decision 2 / U11). Next: U5 onward.
 Process: figure-it-out Phase A (frame) and Phase B (design). Decision trail: [`decisions.tsv`](decisions.tsv).
 
 ## Goal
@@ -93,3 +93,20 @@ An agy reviewer (job `review-mv01fyhy-717b3beb`) challenged this plan. Folded in
 - Verification skill: `.cursor/skills/verify-pi-voice/` (SKILL.md, `scripts/pv.py`, `scripts/seed-history.mjs`, `scripts/ws_recall.py`, `features/`). Proof run `20261008-151119`: launch, doctor, `conversation --via backend` VERIFIED, `memory --via backend` VERIFIED, `handoff --via voice` NOT VERIFIED (audio crash, lid closed), cleanup kept the evidence.
 - Bug fixed: b481cfb, the Pi job journal now honors `TMPDIR` like the extension's lease and stderr log (regression test in `RuntimeTests.swift`).
 - Bug found, not fixed: Voice aborts when audio IO is missing (U2). Checked, not a bug: the Swift 20-message history cap is gone (a331063); the backend keeps `CHAT_SIZE` 100 user turns with compaction, so the startup pack survives a long call.
+
+## Phase 2a results
+
+The user approved decisions 1, 2 and 4 as recommended and skipped 3 (eval). Lid open, built-in speaker and mic.
+
+- U1 (626c992, ca6c868): full matrix with real audio. Final run `20261008-222033` on the final binary: `conversation` and `memory` via backend, `conversation`, `handoff`, `steer`, `stop`, `memory`, `noaudio` via voice, `handoff` and `memory` via pi, all VERIFIED. Harness fixes: drives that check the spoken acknowledgement run unmuted (a muted Voice skips the fallback ack by design) and check no room speech was heard; each Pi drive gets its own sessions, config and seed dirs; Pi speech is read from the shared log because Pi defers its session file until its first assistant message; teardown reaps an exited child before killing its group. Regression tests: `tests/test_verify_skill.py`.
+- U3 (84f285b, agy): `check()` in `macos/Voice/Tests/Check.swift` exits 1 at any optimization level; every test `assert` replaced; `tests/test_swift_test_checks.py` bans `assert`, `assertionFailure` and `precondition` in Swift tests.
+- U4 (ad9c79a, agy plus lead): `pi-voice/tsconfig.json`, pinned dev types (Pi 1.1.0), `npm run typecheck`, CI step. Proven by reintroducing the arity bug (TS2554).
+- U2 (6ea5e64): before `player.play()` Voice waits up to 2 s for the engine's first render cycle; with none it sends a readable `error` and exits 3 instead of raising the uncatchable `player did not see an IO cycle` exception. `-voice.simulateNoAudioIO YES` drives the path; `pv.py drive noaudio` checks it and doctor's lid-closed warning describes it.
+- Decision 2 / U11 (14e4bf9): the code did frame a finished-before-redirect answer as partial in Voice. Now an answer with stopReason `stop` is complete on both sides (`job_update done`, then the result, then a normal `[Pi result …]` turn); a mid-turn cut-off stays partial on both sides.
+
+Open:
+
+- Real lid-closed behavior of the U2 probe is unobserved on hardware (only the simulate seam ran). Close the lid and run `drive noaudio` without the seam, or `drive conversation`, to confirm.
+- Once the Agent spoke its reasoning aloud ("Background shows a prior file listing already relayed..."), triggered by a duplicated Latest turn in a seeded pack. Seen once; not fixed.
+- `pi-voice/package.json` peerDependencies still say `^0.86.0` while dev types pin 1.1.0.
+- `.cursor/skills/verify-pi-voice/scripts/*.py` are not ruff-formatted (outside the CI `src tests` scope).
