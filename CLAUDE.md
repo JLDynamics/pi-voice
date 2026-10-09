@@ -31,7 +31,8 @@ uv run python -c "import nltk; nltk.download('punkt_tab')"  # required for local
 uv run pytest -q
 uv run pytest tests/test_text_prompt.py::test_text_prompt_keeps_persona_in_session_prompt -q   # single test
 
-node --test 'pi-voice/src/*.test.ts'   # pi-voice extension (no npm script, Node ≥22.18 strips types)
+node --test 'pi-voice/src/*.test.ts'   # pi-voice extension tests (Node ≥22.18 strips types)
+(cd pi-voice && npm ci --ignore-scripts && npm run typecheck)   # tsc against pinned Pi 1.1.0 types; CI runs it
 bash macos/Voice/scripts/test.sh       # Swift runtime tests (swiftc, no Xcode project); use check(), never assert()
 bash macos/Voice/scripts/build.sh      # build macos/Voice/build/Voice.app
 

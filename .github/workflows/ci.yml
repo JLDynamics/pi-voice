@@ -14,6 +14,11 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: "24"
+      - name: Pi extension typecheck
+        working-directory: pi-voice
+        run: |
+          npm ci --ignore-scripts
+          npm run typecheck
       - name: Pi extension tests
         run: node --test 'pi-voice/src/*.test.ts'
       - name: Swift runtime tests
