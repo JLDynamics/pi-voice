@@ -1,6 +1,6 @@
 # Agent-friendly pi-voice: refactor plan
 
-Status: phase 1 done; phase 2a done (U1, U2, U3, U4, and decision 2 / U11). Next: U5 onward.
+Status: phases 1, 2a, 2b, 2c implemented and committed locally. Everything after the user's speed override (U5 tests onward) is UNTESTED; a full test run is required before merge (see "Required before merge").
 Process: figure-it-out Phase A (frame) and Phase B (design). Decision trail: [`decisions.tsv`](decisions.tsv).
 
 ## Goal
@@ -110,3 +110,30 @@ Open:
 - Once the Agent spoke its reasoning aloud ("Background shows a prior file listing already relayed..."), triggered by a duplicated Latest turn in a seeded pack. Seen once; not fixed.
 - `pi-voice/package.json` peerDependencies still say `^0.86.0` while dev types pin 1.1.0.
 - `.cursor/skills/verify-pi-voice/scripts/*.py` are not ruff-formatted (outside the CI `src tests` scope).
+
+## Phase 2b results
+
+- (c) 60831e9: skill scripts are ruff-formatted; CI lints and formats `.cursor/skills/`. Verified.
+- (b) 4e38608: the peer dependency `^0.86.0` excluded the installed Pi 1.1.0, because a caret on 0.x pins the minor. It is now `^1.1.0`, and tsc is clean against 0.86 through 1.1.0. Verified.
+- (a) 4d55a69: the agent spoke its reasoning aloud. Root cause: with a realistic startup pack, the first live user turn was read as more background (captured pack 0/8 obeyed). The pack now ends with `PACK_END`, giving 18/18 in probes. New `pv.py drive pack --via voice` and `PV_SEED=repeat`. Verified live (drive pack VERIFIED) before the override.
+- U5 bf2e1c6: `contracts/pi-voice.json` (design and reviewer challenge in `U5-contract.md`). Swift `HeadlessTools` and `VoiceHistoryEnv`; TS `toVoice` builders. Built and type-checked.
+- U5 tests b8bcf43: conformance tests per language plus `scripts/check-contracts.sh --mutate`, written by agy. agy's pass claims were not re-run by the lead. UNTESTED.
+- U6 8cd125a: typed decode at both ends of stdio. Unknown or invalid lines are ignored and logged once per reason. Behaviour change: a `user` line with no `text` is now ignored. UNTESTED.
+- U7 8ca07bb: job-id tagged log lines (TS `note()`, Swift `[PiJob]`), plus once-per-reason failure logs; `pv.py logs --job <id>`; cleanup bundles logs. UNTESTED (only a `pv.py logs` smoke run).
+
+## Phase 2c results
+
+- U8 15346d1: `LiveVoiceBackend.swift` (1031 lines) split into the class (345) plus `+Realtime` (368), `+Tools` (254) and `+PiJobs` (86). Private members became internal. `build.sh` ok. The plan's "extract pure parts with tests" step was skipped (no new tests). UNTESTED.
+- U9 f26bee1: `voice.ts` 940 to 554 lines across `voice-core`, `voice-face`, `voice-lifecycle`, `voice-transcript` and `voice-job` (done by agy and reviewed line by line by the lead). tsc ok. UNTESTED.
+- U10 820ea69: CLAUDE.md 22.4 KB to 9.2 KB, with `docs/architecture/` and the skill's `references/completion-criteria.md`. The planned drift test was not written. UNTESTED.
+
+## Required before merge
+
+All node tests, tsc, full pytest plus ruff check/format plus mypy, `macos/Voice/scripts/test.sh` and `build.sh`, `scripts/check-contracts.sh --mutate`, and the full `pv.py` drive matrix (including `drive pack --via voice` and `noaudio`).
+
+## Open items
+
+- `scripts/patch-pi-native-fold.mjs` still targets the Pi 0.87.1 bundle hash and does not patch Pi 1.1.0.
+- A lid-closed hardware check of the audio failure path has not been run (only the simulated `-voice.simulateNoAudioIO`).
+- U6 behaviour change (a `user` line with no text is ignored) needs the user's OK.
+- D6 and the CLAUDE.md drift test from U10 have no automated guard yet.
