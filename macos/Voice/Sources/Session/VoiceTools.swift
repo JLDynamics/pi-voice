@@ -80,3 +80,53 @@ public final class VoiceToolExecutor: @unchecked Sendable {
         return VoiceToolResult(output: "\(name) runs on the server and is unavailable in this session. Answer without it and say you could not check.")
     }
 }
+
+/// The two tools headless Voice publishes in Pi mode (`VOICE_THINKER=luna`).
+/// Names and the `brief` argument are part of the cross-language contract in
+/// `contracts/pi-voice.json`; the Python prompt names them too. Lives here, not
+/// in LiveVoiceBackend.swift, so `test.sh` compiles and checks it.
+enum HeadlessTools {
+    static let spawnThinking = "spawn_thinking"
+    static let stopThinking = "stop_thinking"
+    static let briefArgument = "brief"
+
+    static var definitions: [[String: Any]] { [spawnThinkingTool, stopThinkingTool] }
+
+    static let spawnThinkingTool: [String: Any] = [
+        "type": "function",
+        "name": spawnThinking,
+        "description": "Hand real work to the open Pi session: files, PDFs, resumes, the shell, web research, code changes, what is on screen, controlling the computer (click, type, fill forms, navigate), or anything you are not sure about. You cannot see the screen or click yourself. Answer casual chat yourself when you already have the context; do not call this for that. A call while Pi is working steers it: the latest brief replaces the current task, so a correction does not need stop_thinking. Call again only when the task really changes, not when the user just confirms, repeats, says continue, rewords the same task, or asks how it is going (answer that from [STATUS]). Then say something like \"Okay, I've redirected Pi to that instead.\" Never say it is queued or runs after that or next. Include paths the user gave. Ask for a missing save destination. Returns immediately. Say one short acknowledgement in this same turn, then wait. Progress arrives as [STATUS] and the answer as [FINAL]. Do not claim you already did the work.",
+        "parameters": [
+            "type": "object",
+            "properties": [
+                briefArgument: [
+                    "type": "string",
+                    "description": "What Pi should do or change in the current task.",
+                ],
+            ],
+            "required": [briefArgument],
+        ] as [String: Any],
+    ]
+
+    /// Spoken cancel for the current handoff. Fire-and-forget, like the
+    /// handoff itself, so the voice line can say what stopped. `/voice stop`
+    /// still ends the call; this does not.
+    static let stopThinkingTool: [String: Any] = [
+        "type": "function",
+        "name": stopThinking,
+        "description": "Stop the Pi task that is running now, when the user explicitly asks you to stop, cancel, or says never mind. Does not end the voice conversation. A correction or follow-up is spawn_thinking, not this. Returns immediately. Say what you stopped.",
+        "parameters": [
+            "type": "object",
+            "properties": [:] as [String: Any],
+        ] as [String: Any],
+    ]
+
+    /// The trimmed `brief` of a `spawn_thinking` call, or "" when missing.
+    static func spawnBrief(_ argsJson: String) -> String {
+        guard let data = argsJson.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let brief = object[briefArgument] as? String
+        else { return "" }
+        return brief.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}

@@ -71,7 +71,8 @@ final class MockVoiceBackend: VoiceBackend, HeadlessBackend {
         onState?(.idle)
     }
 
-    func setMuted(_ muted: Bool) {}
+    var mutedCalls: [Bool] = []
+    func setMuted(_ muted: Bool) { mutedCalls.append(muted) }
 
     func interrupt() {
         interruptCount += 1

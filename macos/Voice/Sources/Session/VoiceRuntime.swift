@@ -300,3 +300,20 @@ enum VoiceToolFormatting {
         return output
     }
 }
+
+/// The startup pack the extension passes in `VOICE_HISTORY`: a JSON array of
+/// `{role, text}` turns (`contracts/pi-voice.json` `voiceHistoryTurn`).
+/// Malformed input or turns missing a field are skipped, never fatal.
+enum VoiceHistoryEnv {
+    static let variable = "VOICE_HISTORY"
+
+    static func parse(_ raw: String?) -> [(role: String, text: String)] {
+        guard let raw, let data = raw.data(using: .utf8),
+              let turns = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]]
+        else { return [] }
+        return turns.compactMap { turn in
+            guard let role = turn["role"] as? String, let text = turn["text"] as? String else { return nil }
+            return (role: role, text: text)
+        }
+    }
+}

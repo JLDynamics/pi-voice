@@ -821,50 +821,13 @@ final class LiveVoiceBackend: VoiceBackend, HeadlessBackend {
         // Progress and the answer arrive as [STATUS] and [FINAL], not as tools
         // the model polls. stop_thinking cancels the current job and leaves
         // the voice call up; `/voice stop` is what ends the call.
-        return [Self.spawnThinkingTool, Self.stopThinkingTool]
+        return HeadlessTools.definitions
     }
-
-    private static let spawnThinkingTool: [String: Any] = [
-        "type": "function",
-        "name": "spawn_thinking",
-        "description": "Hand real work to the open Pi session: files, PDFs, resumes, the shell, web research, code changes, what is on screen, controlling the computer (click, type, fill forms, navigate), or anything you are not sure about. You cannot see the screen or click yourself. Answer casual chat yourself when you already have the context; do not call this for that. A call while Pi is working steers it: the latest brief replaces the current task, so a correction does not need stop_thinking. Call again only when the task really changes, not when the user just confirms, repeats, says continue, rewords the same task, or asks how it is going (answer that from [STATUS]). Then say something like \"Okay, I've redirected Pi to that instead.\" Never say it is queued or runs after that or next. Include paths the user gave. Ask for a missing save destination. Returns immediately. Say one short acknowledgement in this same turn, then wait. Progress arrives as [STATUS] and the answer as [FINAL]. Do not claim you already did the work.",
-        "parameters": [
-            "type": "object",
-            "properties": [
-                "brief": [
-                    "type": "string",
-                    "description": "What Pi should do or change in the current task.",
-                ],
-            ],
-            "required": ["brief"],
-        ] as [String: Any],
-    ]
-
-    /// Spoken cancel for the current handoff. Fire-and-forget, like the
-    /// handoff itself, so the voice line can say what stopped. `/voice stop`
-    /// still ends the call; this does not.
-    private static let stopThinkingTool: [String: Any] = [
-        "type": "function",
-        "name": "stop_thinking",
-        "description": "Stop the Pi task that is running now, when the user explicitly asks you to stop, cancel, or says never mind. Does not end the voice conversation. A correction or follow-up is spawn_thinking, not this. Returns immediately. Say what you stopped.",
-        "parameters": [
-            "type": "object",
-            "properties": [:] as [String: Any],
-        ] as [String: Any],
-    ]
 
     private static func json(_ object: [String: Any]) -> String {
         guard let data = try? JSONSerialization.data(withJSONObject: object),
               let text = String(data: data, encoding: .utf8), !text.isEmpty else { return "{}" }
         return text
-    }
-
-    private static func spawnBrief(_ argsJson: String) -> String {
-        guard let data = argsJson.data(using: .utf8),
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let brief = object["brief"] as? String
-        else { return "" }
-        return brief.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     /// Status and result answers are the point of the call — unlike the
@@ -930,8 +893,8 @@ final class LiveVoiceBackend: VoiceBackend, HeadlessBackend {
     /// extension drops it and reports `dropped`, which stays silent.
     private func executeTool(name: String, argsJson: String, callId: String) {
         guard !closed, seenToolCalls.insert(callId).inserted else { return }
-        if name == "spawn_thinking" {
-            let brief = Self.spawnBrief(argsJson)
+        if name == HeadlessTools.spawnThinking {
+            let brief = HeadlessTools.spawnBrief(argsJson)
             // The same task again within seconds: keep Pi's current work.
             if let current = piJobs.activeRepeat(of: brief) {
                 sendToolOutput(callId: callId, output: Self.json(PiJobTracker.repeatAck(id: current)))
@@ -950,7 +913,7 @@ final class LiveVoiceBackend: VoiceBackend, HeadlessBackend {
             if !brief.isEmpty { onSpawnThinking?(id, brief) }
             return
         }
-        if name == "stop_thinking" {
+        if name == HeadlessTools.stopThinking {
             handoffAckCallId = callId
             if piJobs.hasActive {
                 sendToolOutput(callId: callId, output: "{\"status\":\"stopping\"}")

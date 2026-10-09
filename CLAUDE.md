@@ -92,6 +92,7 @@ Reuse and restart happen only via `run-browser.sh --reuse-running` (which Voice.
 ### Pi voice (`pi-voice/`)
 
 A Pi 1.x extension (tested on 1.1.0, the pinned dev types), not a standalone app. `/voice` spawns one headless `Voice.app` child (`--headless`, `VOICE_THINKER=luna`) that talks NDJSON over stdio (`HeadlessBridge.swift`):
+- `contracts/pi-voice.json` is the source of truth for every cross-language seam (stdio messages, job statuses, `VOICE_HISTORY`, the two tools, `[STATUS]`/`[FINAL]` tags); change it and each side's conformance test together.
 - Wire contract out: `ready`, `error` (`message`), `speech_started`, `heard` (`text`, `item_id`), `spoken_delta` and `spoken` (`text`, `item_id`), `work` (`id`, `brief`), `stop_work`.
 - An audio start failure (no IO cycle within 2s, e.g. lid closed; mic denied; engine failed) sends `error` with a readable message, then exits 3. Never call `AVAudioPlayerNode.play()` before the engine has rendered once: it raises an uncatchable `player did not see an IO cycle` exception. `-voice.simulateNoAudioIO YES` (launch argument) exercises this path.
 - Wire contract in: `user` (`text`; interrupts any in-flight response first), `mute` (`muted`), `interrupt`, `result` (`id`, `speak`, `full`; Swift falls back to `speak` without `full`), `job_update` (`id`, `status`, `note?`; status is `queued`/`working`/`done`/`stopped`/`superseded`/`dropped`/`failed`, and an empty id or status is ignored), `quit`. Unknown types are ignored; stdin EOF quits. The TypeScript side of this contract is typed in `child.ts`.

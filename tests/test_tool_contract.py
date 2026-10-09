@@ -54,6 +54,19 @@ def test_every_published_tool_has_exactly_one_owner():
     assert not (set(SERVER_TOOL_NAMES) & CLIENT_TOOL_NAMES)
 
 
+def _headless_tools() -> tuple[str, dict[str, str]]:
+    """The HeadlessTools block in VoiceTools.swift and its name constants (constant -> tool name)."""
+    tools = (SESSION_SOURCES / "VoiceTools.swift").read_text()
+    block = tools.split("enum HeadlessTools", 1)[1]
+    names = dict(re.findall(r'static let (\w+) = "([a-z_]+)"', block.split("static var definitions", 1)[0]))
+    names.pop("briefArgument", None)
+    return block, names
+
+
+def _spawn_description(block: str) -> str:
+    return block.split('"name": spawnThinking', 1)[1].split('"name": stopThinking', 1)[0]
+
+
 def test_client_dispatch_covers_the_client_tools_and_nothing_else():
     tools = (SESSION_SOURCES / "VoiceTools.swift").read_text()
     assert _dispatched_tool_names(tools) == CLIENT_TOOL_NAMES
@@ -62,16 +75,17 @@ def test_client_dispatch_covers_the_client_tools_and_nothing_else():
 def test_headless_voice_publishes_only_the_handoff():
     """Pi voice is one handoff plus a spoken cancel. The old poll tools are gone."""
     source = (SESSION_SOURCES / "LiveVoiceBackend.swift").read_text()
-    tools = source.split("func headlessTalkerTools()", 1)[1].split("private static func json(", 1)[0]
-    published = set(re.findall(r'"name": "([a-z_]+)"', tools))
+    block, names = _headless_tools()
+    assert "return HeadlessTools.definitions" in source.split("func headlessTalkerTools()", 1)[1]
+    published = {names[c] for c in re.findall(r'"name": (\w+)', block)}
     assert published == {"spawn_thinking", "stop_thinking"}
     dispatch = source.split("private func executeTool(", 1)[1].split("private func sendToolOutput(", 1)[0]
-    assert set(re.findall(r'if name == "([a-z_]+)"', dispatch)) == published
+    assert {names[c] for c in re.findall(r"if name == HeadlessTools\.(\w+)", dispatch)} == published
     for retired in ("ask_pi", "stop_pi", "pi_status", "pi_results"):
-        assert f'"name": "{retired}"' not in source
-    assert '"name": "bash"' not in tools
+        assert f'"{retired}"' not in source and f'"{retired}"' not in block
+    assert '"name": "bash"' not in block
     assert '"name": "screenshot"' not in source
-    description = source.split('"name": "spawn_thinking"', 1)[1].split('"name": "stop_thinking"', 1)[0]
+    description = _spawn_description(block)
     assert "what is on screen" in description
     assert "click, type, fill forms, navigate" in description
     assert "You cannot see the screen or click yourself" in description
@@ -82,14 +96,14 @@ def test_mid_job_spawn_thinking_acks_a_steer():
     """Codex answers a second handoff with "This was sent to steer the previous
     background agent task." Voice.app must do the same, and never call it queued."""
     source = (SESSION_SOURCES / "LiveVoiceBackend.swift").read_text()
-    description = source.split('"name": "spawn_thinking"', 1)[1].split('"parameters"', 1)[0]
+    description = _spawn_description(_headless_tools()[0]).split('"parameters"', 1)[0]
     assert "steers it: the latest brief replaces the current task" in description
     assert "Okay, I've redirected Pi to that instead." in description
     ban = "Never say it is queued or runs after that or next."
     assert ban in description
     assert "queue" not in description.replace(ban, "").lower()
 
-    dispatch = source.split("private func executeTool(", 1)[1].split('if name == "stop_thinking"', 1)[0]
+    dispatch = source.split("private func executeTool(", 1)[1].split("if name == HeadlessTools.stopThinking", 1)[0]
     # Whether this call steers must be read before ask() makes the new id active.
     assert dispatch.index("let steering = piJobs.hasActive") < dispatch.index("piJobs.ask(")
     assert "PiJobTracker.handoffAck(id: id, steering: steering)" in dispatch
@@ -120,7 +134,7 @@ def test_spawn_thinking_is_not_for_confirmations_or_status():
     and Pi's search was lost. The tool says a call is only for a real change, and a
     near-identical repeat of the running job is answered without steering."""
     source = (SESSION_SOURCES / "LiveVoiceBackend.swift").read_text()
-    description = source.split('"name": "spawn_thinking"', 1)[1].split('"parameters"', 1)[0]
+    description = _spawn_description(_headless_tools()[0]).split('"parameters"', 1)[0]
     assert "Call again only when the task really changes" in description
     for case in ("confirms", "repeats", "says continue", "rewords the same task", "asks how it is going"):
         assert case in description, case

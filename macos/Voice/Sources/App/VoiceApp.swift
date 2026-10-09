@@ -46,15 +46,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         setenv("VOICE_THINKER", "luna", 1)
-        if let raw = ProcessInfo.processInfo.environment["VOICE_HISTORY"],
-           let data = raw.data(using: .utf8),
-           let turns = try? JSONSerialization.jsonObject(with: data) as? [[String: String]] {
-            session.seedHistory(turns.compactMap { turn in
-                guard let role = turn["role"], let text = turn["text"] else { return nil }
-                return (role: role, text: text)
-            })
-        }
-        unsetenv("VOICE_HISTORY")
+        let seeded = VoiceHistoryEnv.parse(ProcessInfo.processInfo.environment[VoiceHistoryEnv.variable])
+        if !seeded.isEmpty { session.seedHistory(seeded) }
+        unsetenv(VoiceHistoryEnv.variable)
         stopLauncherOnSignals()
         // No Dock icon and no menu bar presence: this is a background audio bridge.
         NSApp.setActivationPolicy(.accessory)
