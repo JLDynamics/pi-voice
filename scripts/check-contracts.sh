@@ -57,7 +57,7 @@ trap cleanup EXIT INT TERM
 # Mutation table: label | file | literal_to_replace | replacement | suite_command
 MUTATIONS=(
   'Swift HeadlessBridge emit key "item_id" -> "itemId"|macos/Voice/Sources/Session/HeadlessBridge.swift|"item_id": itemId ?? ""|"itemId": itemId ?? ""|bash macos/Voice/scripts/test.sh'
-  'Swift HeadlessBridge inbound "speak" -> "speech"|macos/Voice/Sources/Session/HeadlessBridge.swift|let speak = object["speak"] as? String ?? ""|let speak = object["speech"] as? String ?? ""|bash macos/Voice/scripts/test.sh'
+  'Swift HeadlessBridge inbound "speak" -> "speech"|macos/Voice/Sources/Session/HeadlessBridge.swift|string("speak")|string("speech")|bash macos/Voice/scripts/test.sh'
   'Swift VoiceTools HeadlessTools "spawn_thinking" -> "spawn_think"|macos/Voice/Sources/Session/VoiceTools.swift|static let spawnThinking = "spawn_thinking"|static let spawnThinking = "spawn_think"|bash macos/Voice/scripts/test.sh'
   'Swift PiJobTracker "[FINAL]" (finalChannel) -> "[DONE]"|macos/Voice/Sources/Session/PiJobTracker.swift|return "[FINAL] Partial findings|return "[DONE] Partial findings|bash macos/Voice/scripts/test.sh'
   'Swift PiJobTracker case superseded -> case replaced|macos/Voice/Sources/Session/PiJobTracker.swift|case superseded|case replaced|bash macos/Voice/scripts/test.sh'
