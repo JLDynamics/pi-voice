@@ -675,6 +675,29 @@ struct RuntimeTests {
         current = tracker.statusPayload(now: t0.addingTimeInterval(74))
         check((current["id"] as? String) == "w2", "stale update must not resurrect w1")
 
+        // A superseded job whose answer Pi had already finished is reported
+        // done by the extension: that one move out of superseded is allowed,
+        // so the [FINAL] frame says Pi finished, not partial. Nothing else
+        // leaves a terminal state.
+        var redirected = PiJobTracker()
+        redirected.ask(id: "f1", brief: "find FIXME", now: t0)
+        redirected.ask(id: "f2", brief: "now TODO", now: t0.addingTimeInterval(1))
+        redirected.update(id: "f1", state: .superseded, note: nil, now: t0.addingTimeInterval(2))
+        redirected.update(id: "f1", state: .done, note: nil, now: t0.addingTimeInterval(3))
+        check(redirected.jobs["f1"]?.state == .done, "finished-before-redirect job becomes done")
+        redirected.finish(id: "f1", text: "Two FIXME lines.", now: t0.addingTimeInterval(4))
+        check(PiJobTracker.finalChannel(excerpt: "Two FIXME lines.", outcome: redirected.jobs["f1"]?.state).hasPrefix("[FINAL] Pi finished."))
+        check(redirected.statusPayload(now: t0.addingTimeInterval(5))["id"] as? String == "f2", "done update must not steal active from the new job")
+        redirected.update(id: "f1", state: .superseded, note: nil, now: t0.addingTimeInterval(6))
+        check(redirected.jobs["f1"]?.state == .done, "done stays done")
+        for sticky in [PiJobTracker.State.stopped, .failed, .dropped] {
+            var t = PiJobTracker()
+            t.ask(id: "x", brief: "b", now: t0)
+            t.update(id: "x", state: sticky, note: nil, now: t0)
+            t.update(id: "x", state: .done, note: nil, now: t0)
+            check(t.jobs["x"]?.state == sticky, "\(sticky) must not become done")
+        }
+
         // A dropped ask (extension declined it, e.g. mic closed) clears active.
         tracker.update(id: "w2", state: .dropped, note: nil, now: t0.addingTimeInterval(75))
         check(!tracker.hasActive, "dropped job clears active")

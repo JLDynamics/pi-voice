@@ -38,13 +38,25 @@ export function terminalJob(job: Extract<Job, { tag: "running" }>, world: StepWo
  * second request made while Pi was writing its answer left that answer in the
  * branch with nobody to relay or save it (seen live: a FIXME search answered,
  * then a new task arrived, and the finding was never spoken). Relay it once.
+ *
+ * Pi finished it: the job is reported done before its result, so Voice frames
+ * the answer as complete, matching the `[Pi result …]` row the shared log keeps.
+ * Pi was cut off mid-turn (the steer landed after a tool batch): it stays
+ * partial on both sides.
  */
 export function priorFindings(job: Extract<Job, { tag: "running" }>, world: StepWorld): Effect[] {
   if (!job.prior) return [];
   const full = (answerForJob(world.branch, job.prior.id) ?? "").trim();
   const speak = fullResult(full);
   if (!speak) return [];
+  if (!answerFinished(world.branch, job.prior.id)) {
+    return [
+      { tag: "postResult", id: job.prior.id, speak, full },
+      { tag: "recordTurn", turn: { role: "assistant", text: `[Partial Pi findings; task superseded] ${full}` }, turnKind: "work" },
+    ];
+  }
   return [
+    { tag: "sendJobUpdate", id: job.prior.id, status: "done" },
     { tag: "postResult", id: job.prior.id, speak, full },
     { tag: "recordTurn", turn: workHistoryTurn(job.prior.brief, full), turnKind: "work" },
   ];
@@ -267,6 +279,24 @@ export function webSourceCount(result: string): number {
 }
 
 export function answerForJob(branch: SessionEntry[], id: WorkId): string | undefined {
+  const answer = answerMessage(branch, id);
+  return answer ? visibleText(answer.content) : undefined;
+}
+
+/** Stop reasons that mean Pi was cut off before it ended its turn. */
+const CUT_OFF = new Set(["toolUse", "error", "aborted", "length"]);
+
+/**
+ * Whether the job's answer ended Pi's turn. A steer is delivered after Pi's
+ * current tool batch, so the last answer before it can be a mid-turn step
+ * (`toolUse`). Entries without a stop reason count as finished.
+ */
+export function answerFinished(branch: SessionEntry[], id: WorkId): boolean {
+  const answer = answerMessage(branch, id);
+  return answer != null && !CUT_OFF.has(answer.stopReason ?? "");
+}
+
+function answerMessage(branch: SessionEntry[], id: WorkId): { content: unknown; stopReason?: string } | undefined {
   let marker = -1;
   for (let i = branch.length - 1; i >= 0; i--) {
     const message = sessionMessage(branch[i]);
@@ -277,11 +307,11 @@ export function answerForJob(branch: SessionEntry[], id: WorkId): string | undef
     }
   }
   if (marker < 0) return;
-  let answer: string | undefined;
+  let answer: { content: unknown; stopReason?: string } | undefined;
   for (let i = marker + 1; i < branch.length; i++) {
     const message = sessionMessage(branch[i]);
     if (message?.role === "user") break;
-    if (message?.role === "assistant") answer = visibleText(message.content);
+    if (message?.role === "assistant") answer = message;
   }
   return answer;
 }
@@ -330,11 +360,12 @@ function graphemes(text: string): string[] {
   return [...text];
 }
 
-function sessionMessage(entry: SessionEntry | undefined): { role: string; content: unknown } | undefined {
+function sessionMessage(entry: SessionEntry | undefined): { role: string; content: unknown; stopReason?: string } | undefined {
   if (!entry || entry.type !== "message") return;
-  const message = (entry as { message?: { role?: unknown; content?: unknown } }).message;
+  const message = (entry as { message?: { role?: unknown; content?: unknown; stopReason?: unknown } }).message;
   if (!message || typeof message.role !== "string") return;
-  return { role: message.role, content: message.content };
+  const stopReason = typeof message.stopReason === "string" ? message.stopReason : undefined;
+  return { role: message.role, content: message.content, stopReason };
 }
 
 function visibleText(content: unknown): string {
