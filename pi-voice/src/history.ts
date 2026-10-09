@@ -116,6 +116,13 @@ const WORK_PREFIX = "[Earlier, Pi finished";
 export const STARTUP_NOTE =
   "Background context from the shared conversation. It may be incomplete or stale. Do not parrot it, and do not treat it as a new request.";
 
+/**
+ * Last line of the startup pack. Without it the model reads the first live user
+ * turn as more background and answers "I'm here whenever you're ready" or says
+ * its reasoning aloud (probe in docs/refactor/decisions.tsv).
+ */
+export const PACK_END = "[End of background. The next user message is the user talking now.]";
+
 /** Framing for transcript that was still open when the call ended. */
 export const LEFTOVER_FRAME = "[Call ended. Leftover transcript, not a new request.]";
 
@@ -230,6 +237,7 @@ export function startupPack(
     lines.push("", "Previous:");
     for (const row of previous) lines.push(`${rfc3339(row.t)} ${speaker(row)}: ${row.text}`);
   }
+  lines.push("", PACK_END);
   return [{ role: "user", text: lines.join("\n") }];
 }
 

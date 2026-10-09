@@ -59,6 +59,7 @@ $SKILL/scripts/pv.py drive memory
 $SKILL/scripts/pv.py drive handoff --via pi             # full chain, real Pi
 $SKILL/scripts/pv.py drive memory --via pi              # /voice, stop, /voice again
 $SKILL/scripts/pv.py drive noaudio                      # no audio IO: readable error, exit 3, no crash
+$SKILL/scripts/pv.py drive pack                         # 3 calls: first live turn after a pack is answered
 ```
 
 Each drive prints `CHECK PASS|FAIL <name>` lines and ends with `VERIFIED` or `NOT VERIFIED` (exit 0 or 1). The recipes, stable handles, and per-feature proof live in [`features/`](features/README.md). Read the matching file before driving, and drive every entry point the file lists before calling a feature verified.
