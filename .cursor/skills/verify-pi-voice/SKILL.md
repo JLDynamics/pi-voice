@@ -95,6 +95,10 @@ Stops only what the run started: drive children recorded in `state.json` (by pro
 - `scripts/seed-history.mjs`: writes a synthetic earlier call into a scratch cabinet with the extension's own `Conversation` code, reopens it, and prints the startup pack. `PI_VOICE_CONFIG=<dir> PV_PROJ=<folder> PV_SRC=pi-voice/src node $SKILL/scripts/seed-history.mjs`.
 - `scripts/ws_recall.py`: replays a pack on the backend WebSocket the way Voice.app does (no reply requested), then asks one question. `.venv/bin/python $SKILL/scripts/ws_recall.py <ws_url> <pack.json> <question> <out.json>`.
 
+## Completion criteria
+
+Before saying a change is done, read `references/completion-criteria.md`. It says which boundary each check proves (history chain, delegation cases, safe live checks), and you must name any boundary you did not exercise.
+
 ## Gotchas
 
 - Lid closed means no audio IO. Headless Voice then sends `error` "No audio input or output is running. ..." and exits 3 (before U2 it aborted with `'player did not see an IO cycle'`), so `--via voice`/`--via pi` report NOT VERIFIED with that reason. Use `--via backend`, or open the lid. Muting does not avoid it. `drive noaudio` proves this path with the lid open via the per-process `-voice.simulateNoAudioIO YES` argument.
