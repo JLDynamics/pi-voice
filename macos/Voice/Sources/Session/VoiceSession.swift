@@ -100,6 +100,7 @@ final class SessionController {
     var onSpoken: ((String) -> Void)?
     var onSpawnThinking: ((String, String) -> Void)?
     var onStopThinking: (() -> Void)?
+    var onFatalStart: ((String) -> Void)?
 
     private var pendingUserText: String?
     private var pendingUserItemId: String?
@@ -288,6 +289,9 @@ final class SessionController {
                 state = .failed(message)
                 errorText = message
                 if !alreadyReported { onStateChanged?(state) }
+                if error is FatalStartError {
+                    onFatalStart?(message)
+                }
             }
         }
         beginTask = task

@@ -71,14 +71,20 @@ final class AudioEngine {
             )!
     }
 
-    enum AudioError: LocalizedError {
+    private var isAudioIORendering: Bool {
+        engine?.outputNode.lastRenderTime?.isSampleTimeValid == true
+    }
+
+    enum AudioError: LocalizedError, FatalStartError {
         case microphoneDenied
         case engineFailed
+        case noAudioIO
 
         var errorDescription: String? {
             switch self {
             case .microphoneDenied: return "Microphone access is off"
             case .engineFailed: return "Couldn't start audio"
+            case .noAudioIO: return AudioIOProbe.noIOMessage
             }
         }
     }
@@ -106,7 +112,13 @@ final class AudioEngine {
         engine.prepare()
         do {
             try engine.start()
-            if !player.isPlaying { player.play() }
+            if !player.isPlaying {
+                if isAudioIORendering {
+                    player.play()
+                } else {
+                    NSLog("[AudioEngine] audio IO unavailable during restart; skipping player.play")
+                }
+            }
             NSLog("[AudioEngine] restarted engine after config change; running=\(engine.isRunning)")
         } catch {
             NSLog("[AudioEngine] failed to restart engine after config change: \(error.localizedDescription)")
@@ -212,6 +224,24 @@ final class AudioEngine {
         if !voiceProcessingEnabled && !headphones {
             NSLog("[AudioEngine] speaker compatibility mode suppresses the mic during playback")
         }
+
+        // Test seam: set via launch argument `-voice.simulateNoAudioIO YES`
+        // so the verification harness can exercise this path with the lid open.
+        let simulateNoIO = UserDefaults.standard.bool(forKey: "voice.simulateNoAudioIO")
+        let ioWaitStart = Date()
+        let seen = await AudioIOProbe.waitForFirstCycle(
+            rendered: { engine.outputNode.lastRenderTime?.isSampleTimeValid == true && !simulateNoIO },
+            sleep: { try? await Task.sleep(nanoseconds: UInt64($0 * 1_000_000_000)) }
+        )
+        if !seen {
+            NSLog("[AudioEngine] no IO cycle in \(AudioIOProbe.timeout)s; audio device unavailable")
+            stop()
+            shouldBeRunning = false
+            throw AudioError.noAudioIO
+        }
+        let waitMs = Int((Date().timeIntervalSince(ioWaitStart) * 1000).rounded())
+        NSLog("[AudioEngine] first IO cycle after \(waitMs) ms")
+
         if !player.isPlaying { player.play() }
         let inFmt = engine.inputNode.inputFormat(forBus: 0)
         ioFormat = AVAudioFormat(
@@ -273,7 +303,7 @@ final class AudioEngine {
     var isPlaying: Bool { playback.isAudible }
 
     func play(_ buffer: AVAudioPCMBuffer) {
-        if !player.isPlaying { player.play() }
+        if !player.isPlaying && isAudioIORendering { player.play() }
         let token = playback.enqueue()
         // dataPlayedBack tracks the speakers, not merely data consumed by the engine.
         player.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { [weak self] _ in
@@ -286,7 +316,7 @@ final class AudioEngine {
         // Invalidate callbacks before stop() releases old scheduled buffers.
         playback.clear()
         player.stop()
-        if engine?.isRunning == true { player.play() }
+        if engine?.isRunning == true && isAudioIORendering { player.play() }
     }
 
     private func wireIO(format: AVAudioFormat?) {

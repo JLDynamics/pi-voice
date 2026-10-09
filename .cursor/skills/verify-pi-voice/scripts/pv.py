@@ -246,8 +246,8 @@ def cmd_doctor(args: argparse.Namespace) -> None:
     lid_closed = '"AppleClamshellState" = Yes' in clamshell
     info = {"user_port_8766_listener": user_listener, "note": "informational; never touched", "lid_closed": lid_closed}
     if lid_closed:
-        print("WARN  lid is closed: built-in audio does no IO, so --via voice and --via pi crash Voice "
-              "('player did not see an IO cycle'). --via backend still works.")
+        print("WARN  lid is closed: built-in audio does no IO, so Voice stops with 'No audio input or output is running' "
+              "(exit 3) and --via voice / --via pi report NOT VERIFIED. --via backend still works.")
     report = {"run": str(run), "checks": checks, "info": info}
     out = run / "evidence" / f"doctor-{stamp()}.json"
     out.write_text(json.dumps(report, indent=2) + "\n")
@@ -288,7 +288,8 @@ class Proof:
 class Voice:
     """Headless Voice.app over NDJSON stdio; the harness plays the Pi extension's part."""
 
-    def __init__(self, run: Path, st: dict[str, Any], proof: Proof, history: list[dict[str, str]], label: str):
+    def __init__(self, run: Path, st: dict[str, Any], proof: Proof, history: list[dict[str, str]], label: str,
+                 extra_args: tuple[str, ...] = ()):
         self.proof = proof
         self.events: list[tuple[float, dict[str, Any]]] = []
         self.cond = threading.Condition()
@@ -297,7 +298,7 @@ class Voice:
         self.transcript = open(proof.dir / f"{label}.ndjson", "a")
         self.stderr_path = run / "logs" / f"voice-{label}-{stamp()}.stderr.log"
         self.proc = subprocess.Popen(
-            [st["wrapper"], "--headless"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            [st["wrapper"], "--headless", *extra_args], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=open(self.stderr_path, "ab"), env=env, start_new_session=True,
         )
         remember_child(run, self.proc.pid, "voice", str(VOICE_BIN))
@@ -320,6 +321,12 @@ class Voice:
                 self.cond.notify_all()
 
     def crash_reason(self) -> str:
+        """Why Voice is gone: its NDJSON error line if it sent one, else an uncaught
+        exception's reason from stderr, else the exit code."""
+        with self.cond:
+            errors = [e.get("message", "") for _, e in self.events if e.get("type") == "error"]
+        if errors:
+            return f"{errors[-1]} (exit {self.proc.returncode})"
         text = self.stderr_path.read_text(errors="replace") if self.stderr_path.exists() else ""
         found = re.findall(r"reason: '([^']+)'", text)
         return found[-1] if found else f"exit {self.proc.returncode}"
@@ -544,6 +551,24 @@ def drive_stop(run: Path, st: dict[str, Any], proof: Proof) -> None:
         proof.check("stop with nothing running forwards nothing", not voice.after(t, "stop_work"), voice.after(t, "stop_work"))
     finally:
         voice.quit()
+
+def drive_noaudio(run: Path, st: dict[str, Any], proof: Proof) -> None:
+    """No audio IO (lid closed) without closing the lid: the per-process launch
+    argument -voice.simulateNoAudioIO makes Voice see no IO cycle. Voice must
+    send a readable error and exit 3, not abort."""
+    voice = Voice(run, st, proof, [], "noaudio", ("-voice.simulateNoAudioIO", "YES"))
+    voice.send({"type": "mute", "muted": True})
+    error = voice.wait(lambda e: e.get("type") == "error", 60)
+    proof.check("Voice reports missing audio IO as a readable error line", error and "No audio input or output" in error.get("message", ""), error)
+    try:
+        code: Optional[int] = voice.proc.wait(15)
+    except subprocess.TimeoutExpired:
+        code = None
+        os.killpg(voice.proc.pid, signal.SIGTERM)
+    proof.check("Voice exits with code 3 (audio unavailable), not a crash", code == 3, f"rc={code}")
+    text = voice.stderr_path.read_text(errors="replace") if voice.stderr_path.exists() else ""
+    proof.check("no uncaught exception in Voice stderr", "Terminating app due to uncaught exception" not in text,
+                re.findall(r"reason: '([^']+)'", text))
 
 def seed_pack(run: Path, proof: Proof) -> list[dict[str, str]]:
     """Build the startup pack with the extension's own Conversation code in an isolated config dir."""
@@ -817,6 +842,7 @@ DRIVES: dict[tuple[str, str], Callable[[Path, dict[str, Any], Proof], None]] = {
     ("stop", "voice"): drive_stop,
     ("memory", "voice"): drive_memory_voice,
     ("memory", "pi"): drive_memory_pi,
+    ("noaudio", "voice"): drive_noaudio,
 }
 
 def cmd_drive(args: argparse.Namespace) -> None:

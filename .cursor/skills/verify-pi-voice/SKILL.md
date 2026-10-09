@@ -58,11 +58,12 @@ $SKILL/scripts/pv.py drive stop
 $SKILL/scripts/pv.py drive memory
 $SKILL/scripts/pv.py drive handoff --via pi             # full chain, real Pi
 $SKILL/scripts/pv.py drive memory --via pi              # /voice, stop, /voice again
+$SKILL/scripts/pv.py drive noaudio                      # no audio IO: readable error, exit 3, no crash
 ```
 
 Each drive prints `CHECK PASS|FAIL <name>` lines and ends with `VERIFIED` or `NOT VERIFIED` (exit 0 or 1). The recipes, stable handles, and per-feature proof live in [`features/`](features/README.md). Read the matching file before driving, and drive every entry point the file lists before calling a feature verified.
 
-The stable handles are the NDJSON wire types on Voice's stdio (`ready`, `spoken`, `work`, `stop_work`, `error` out; `user`, `mute`, `job_update`, `result`, `quit` in; see `pi-voice/src/child.ts`), Realtime events on the WebSocket, Pi session entries (`customType: "pi-voice-face"`, `kind: "spoken" | "spoken-final"`, user messages ending in `[Pi voice job id: <id>]`), and rows in `history-<id>.sqlite`.
+The stable handles are the NDJSON wire types on Voice's stdio (`ready`, `spoken`, `work`, `stop_work`, `error` out; `user`, `mute`, `job_update`, `result`, `quit` in; see `pi-voice/src/child.ts`), Realtime events on the WebSocket, Pi session entries (user messages ending in `[Pi voice job id: <id>]`; Pi writes its session file only after its first assistant message, so Agent-only turns never show there), and rows in `history-<id>.sqlite` (what Agent said aloud is `role=assistant, kind=voice`, written at once).
 
 For an ad hoc drive, `eval "$($SKILL/scripts/pv.py env)"` exports the run's `PI_VOICE_CONFIG`, `TMPDIR`, `VOICE_BIN`, `PV_PORT`, `PV_PROJ` and `PV_SESSIONS`. Start your own processes from that shell and stop them yourself.
 
@@ -94,7 +95,7 @@ Stops only what the run started: drive children recorded in `state.json` (by pro
 
 ## Gotchas
 
-- Lid closed means no audio IO. Headless Voice then dies with `'player did not see an IO cycle'` (an uncaught AVFoundation exception in `AudioEngine.start`) and `--via voice`/`--via pi` report `Voice audio engine started` as FAIL. Use `--via backend`, or open the lid. Muting does not avoid it.
+- Lid closed means no audio IO. Headless Voice then sends `error` "No audio input or output is running. ..." and exits 3 (before U2 it aborted with `'player did not see an IO cycle'`), so `--via voice`/`--via pi` report NOT VERIFIED with that reason. Use `--via backend`, or open the lid. Muting does not avoid it. `drive noaudio` proves this path with the lid open via the per-process `-voice.simulateNoAudioIO YES` argument.
 - `--via pi` must stay unmuted: work is dropped while muted, by design, with no spoken ack. `--via voice` handoff, steer and stop are unmuted too: while muted Voice skips its fallback ack when the model calls a tool without speaking, so an ack check would only pass by luck. Unmuted drives open the real mic and play speech aloud; run them in a quiet room. They fail `no room speech or echo heard while the mic was open` if the mic picked anything up.
 - `--via backend` skips Voice.app's own `session.update`, so it cannot show tool calls.
 - Model replies vary. Checks match loose content (`hello`, `4|four`, file names). One failing content check is a reason to read `drive.log`, not to loosen the regex.

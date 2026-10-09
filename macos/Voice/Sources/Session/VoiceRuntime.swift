@@ -54,6 +54,37 @@ enum VoiceServerError {
     }
 }
 
+/// A start failure that no retry can fix while the process runs.
+protocol FatalStartError: Error {}
+
+enum HeadlessExitCode {
+    static let audioUnavailable: Int32 = 3
+}
+
+enum AudioIOProbe {
+    static let timeout: TimeInterval = 2.0
+    static let pollInterval: TimeInterval = 0.02
+    static let noIOMessage = "No audio input or output is running. Is the lid closed, or is the audio device unavailable?"
+
+    static func waitForFirstCycle(
+        timeout: TimeInterval = timeout,
+        pollInterval: TimeInterval = pollInterval,
+        rendered: () -> Bool,
+        sleep: (TimeInterval) async -> Void
+    ) async -> Bool {
+        if rendered() { return true }
+        guard timeout > 0, pollInterval > 0 else { return false }
+        var elapsed: TimeInterval = 0
+        while elapsed < timeout - 1e-9 {
+            let step = min(pollInterval, timeout - elapsed)
+            await sleep(step)
+            elapsed += step
+            if rendered() { return true }
+        }
+        return false
+    }
+}
+
 /// When `speech_started` may steal the panel.
 ///
 /// Gaps between TTS chunks look like "not playing". An active response
