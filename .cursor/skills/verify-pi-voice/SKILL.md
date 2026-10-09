@@ -10,7 +10,7 @@ pi-voice has no window. The user surface is speech (or typing in Pi's composer) 
 | `--via` | What runs | Proves | Needs |
 | --- | --- | --- | --- |
 | `backend` | the Python backend over its real WebSocket | model turns, VAD, startup-pack injection | nothing extra |
-| `voice` | headless `Voice.app` from this checkout, muted; the harness plays the Pi extension on stdio | Agent's tools (`spawn_thinking`, `stop_thinking`), `[FINAL]`/`[STATUS]` handling, job journal | working audio IO |
+| `voice` | headless `Voice.app` from this checkout (muted for conversation and memory; unmuted for handoff, steer and stop, which check the spoken ack); the harness plays the Pi extension on stdio | Agent's tools (`spawn_thinking`, `stop_thinking`), `[FINAL]`/`[STATUS]` handling, job journal | working audio IO |
 | `pi` | real `pi` in a PTY with this checkout's extension and `/voice` | the whole chain: handoff to Pi, result spoken, shared log, reconnect pack | working audio IO, Pi model tokens, unmuted mic and speaker |
 
 Every drive is a real path. Nothing calls internal setters; the only stand-in is the harness replying as Pi on the `voice` layer, which is the NDJSON contract Voice.app already isolates.
@@ -95,7 +95,7 @@ Stops only what the run started: drive children recorded in `state.json` (by pro
 ## Gotchas
 
 - Lid closed means no audio IO. Headless Voice then dies with `'player did not see an IO cycle'` (an uncaught AVFoundation exception in `AudioEngine.start`) and `--via voice`/`--via pi` report `Voice audio engine started` as FAIL. Use `--via backend`, or open the lid. Muting does not avoid it.
-- `--via pi` must stay unmuted: work is dropped while muted, by design, with no spoken ack. So it opens the real mic and plays speech aloud; run it in a quiet room.
+- `--via pi` must stay unmuted: work is dropped while muted, by design, with no spoken ack. `--via voice` handoff, steer and stop are unmuted too: while muted Voice skips its fallback ack when the model calls a tool without speaking, so an ack check would only pass by luck. Unmuted drives open the real mic and play speech aloud; run them in a quiet room. They fail `no room speech or echo heard while the mic was open` if the mic picked anything up.
 - `--via backend` skips Voice.app's own `session.update`, so it cannot show tool calls.
 - Model replies vary. Checks match loose content (`hello`, `4|four`, file names). One failing content check is a reason to read `drive.log`, not to loosen the regex.
 - Port 8766 belongs to the user. A launcher or `/voice` from any checkout on 8766 restarts `stale` or `foreign` services; this skill never uses it.
