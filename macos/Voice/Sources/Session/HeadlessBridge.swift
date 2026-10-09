@@ -25,6 +25,9 @@ final class HeadlessBridge {
     /// Injected sink for testing; if nil, writes to standardOutput.
     var emitSink: (([String: Any]) -> Void)?
     var onTerminate: (() -> Void) = { NSApp.terminate(nil) }
+    /// Stops the backend launcher on `quit`. Injected in tests so a test never
+    /// stops a real service.
+    var onStopService: (() -> Void) = { LocalServiceStarter.shared.stop() }
     var onExit: ((Int32) -> Void) = { code in
         fflush(stdout)
         LocalServiceStarter.shared.stop()
@@ -127,7 +130,7 @@ final class HeadlessBridge {
         else { return }
         if type == "quit" {
             session?.requestEnd()
-            LocalServiceStarter.shared.stop()
+            onStopService()
             onTerminate()
             return
         }

@@ -1,0 +1,46 @@
+{
+  "_doc": "Cross-language seams between the Pi extension (pi-voice/src, TypeScript), headless Voice.app (macos/Voice, Swift) and the Python backend (src/chatbot). Read by a conformance test in each language; production code never loads it. Field types: string, boolean, or an enum name from `enums`; a trailing ? marks an optional field. A message lists every field its sender writes; a sender writing any other key is a contract violation. Design: docs/refactor/U5-contract.md.",
+  "version": 1,
+  "enums": {
+    "jobStatus": ["queued", "working", "done", "stopped", "superseded", "dropped", "failed"],
+    "historyRole": ["user", "assistant"]
+  },
+  "stdio": {
+    "_doc": "NDJSON over Voice's stdin (toVoice) and stdout (fromVoice), one object per line, `type` names the message.",
+    "toVoice": {
+      "user": { "text": "string" },
+      "mute": { "muted": "boolean" },
+      "interrupt": {},
+      "result": { "id": "string", "speak": "string", "full": "string" },
+      "job_update": { "id": "string", "status": "jobStatus", "note": "string?" },
+      "quit": {}
+    },
+    "fromVoice": {
+      "ready": {},
+      "error": { "message": "string" },
+      "request_error": { "message": "string" },
+      "speech_started": {},
+      "heard": { "text": "string", "item_id": "string" },
+      "spoken_delta": { "text": "string", "item_id": "string" },
+      "spoken": { "text": "string", "item_id": "string" },
+      "work": { "id": "string", "brief": "string" },
+      "stop_work": {}
+    }
+  },
+  "voiceHistory": {
+    "_doc": "The startup pack: a JSON array of turns in this environment variable, set by the extension when it spawns Voice.",
+    "env": "VOICE_HISTORY",
+    "turn": { "role": "historyRole", "text": "string" }
+  },
+  "tools": {
+    "_doc": "Tools headless Voice publishes in session.update; the Python prompt gates its Pi section on spawn_thinking and names both. Values are argument fields.",
+    "spawn_thinking": { "brief": "string" },
+    "stop_thinking": {}
+  },
+  "channels": {
+    "_doc": "Tags Swift puts at the start of context it injects for the voice model; the Python prompt explains them. legacyPi is still explained for old transcripts.",
+    "status": "[STATUS]",
+    "final": "[FINAL]",
+    "legacyPi": "[PI]"
+  }
+}

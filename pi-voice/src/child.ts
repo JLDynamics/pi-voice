@@ -11,7 +11,7 @@ export type VoiceLease = {
   executable: string;
 };
 
-type HeadlessIn =
+export type HeadlessIn =
   | { type: "quit" }
   | { type: "mute"; muted: boolean }
   | { type: "interrupt" }
@@ -19,7 +19,23 @@ type HeadlessIn =
   | { type: "result"; id: string; speak: string; full: string }
   | { type: "job_update"; id: string; status: JobUpdateStatus; note?: string };
 
-export type JobUpdateStatus = "queued" | "working" | "done" | "stopped" | "superseded" | "dropped" | "failed";
+/** Job phases the extension reports to Voice (`contracts/pi-voice.json` `jobStatuses`). */
+export const JOB_UPDATE_STATUSES = ["queued", "working", "done", "stopped", "superseded", "dropped", "failed"] as const;
+export type JobUpdateStatus = (typeof JOB_UPDATE_STATUSES)[number];
+
+/**
+ * Every stdio message the extension sends Voice. Field names live only here,
+ * so `contract.test.ts` checks them against `contracts/pi-voice.json`.
+ */
+export const toVoice = {
+  quit: (): HeadlessIn => ({ type: "quit" }),
+  mute: (muted: boolean): HeadlessIn => ({ type: "mute", muted }),
+  interrupt: (): HeadlessIn => ({ type: "interrupt" }),
+  user: (text: string): HeadlessIn => ({ type: "user", text }),
+  result: (id: string, speak: string, full: string): HeadlessIn => ({ type: "result", id, speak, full }),
+  jobUpdate: (id: string, status: JobUpdateStatus, note?: string): HeadlessIn =>
+    note ? { type: "job_update", id, status, note } : { type: "job_update", id, status },
+};
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "../..");
 
@@ -92,30 +108,29 @@ export class VoiceChild {
   }
 
   setMuted(closed: boolean): void {
-    this.send({ type: "mute", muted: closed });
+    this.send(toVoice.mute(closed));
   }
 
   interrupt(): void {
-    this.send({ type: "interrupt" });
+    this.send(toVoice.interrupt());
   }
 
   ingestUser(text: UserText): void {
     const trimmed = String(text).trim();
     if (!trimmed) return;
-    this.send({ type: "user", text: trimmed });
+    this.send(toVoice.user(trimmed));
   }
 
   postResult(id: WorkId, speak: ShortResult, full: string): void {
-    this.send({ type: "result", id, speak, full });
+    this.send(toVoice.result(id, speak, full));
   }
 
   sendJobUpdate(id: WorkId, status: JobUpdateStatus, note?: string): void {
-    if (note) this.send({ type: "job_update", id, status, note });
-    else this.send({ type: "job_update", id, status });
+    this.send(toVoice.jobUpdate(id, status, note));
   }
 
   quit(): void {
-    this.send({ type: "quit" });
+    this.send(toVoice.quit());
     const proc = this.proc;
     setTimeout(() => {
       if (proc.exitCode == null && proc.signalCode == null) proc.kill("SIGTERM");

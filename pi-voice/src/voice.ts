@@ -9,7 +9,7 @@ import type {
   SessionEntry,
 } from "@earendil-works/pi-coding-agent";
 import type { AutocompleteItem, Component } from "@earendil-works/pi-tui";
-import { clearOwnedLease, liveForeignOwner, reapOrphans, VoiceChild, type VoiceHistoryTurn } from "./child.ts";
+import { clearOwnedLease, type JobUpdateStatus, liveForeignOwner, reapOrphans, VoiceChild, type VoiceHistoryTurn } from "./child.ts";
 import {
   bindJob,
   jobIdFromText,
@@ -132,7 +132,7 @@ export type Effect =
   | {
       tag: "sendJobUpdate";
       id: WorkId;
-      status: "queued" | "working" | "done" | "stopped" | "superseded" | "dropped" | "failed";
+      status: JobUpdateStatus;
       note?: string;
     }
   | { tag: "abortWork" }
