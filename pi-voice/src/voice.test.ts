@@ -28,7 +28,7 @@ import {
   type VoiceState,
 } from "./voice.ts";
 import { fullResult, lastAssistantText, openJob, settleJob } from "./work.ts";
-import { answerForJob, jobIdFromText, jobPrompt, lastUserJobId, toolProgress, webSourceCount } from "./work.ts";
+import { answerFinished, answerForJob, jobIdFromText, jobPrompt, lastUserJobId, toolProgress, webSourceCount } from "./work.ts";
 
 function pid(n: number): ChildPid {
   return n as ChildPid;
@@ -77,6 +77,17 @@ function on(over: Partial<Extract<VoiceState, { tag: "on" }>> = {}): VoiceState 
     heardItemId: null,
     ...over,
   };
+}
+
+/** An assistant entry carrying Pi's stop reason ("stop" ends the turn, "toolUse" is mid-turn). */
+function answerEntry(id: string, content: string, stopReason: string): SessionEntry {
+  return {
+    type: "message",
+    id,
+    parentId: null,
+    timestamp: "t",
+    message: { role: "assistant", content, stopReason, timestamp: 0 },
+  } as unknown as SessionEntry; // partial fixture: no api/provider/usage, only what work.ts reads
 }
 
 function message(
@@ -1106,6 +1117,43 @@ describe("job identity", () => {
     const settled = step(bound.state, { tag: "agentSettled" }, world({ branch: [...branch, message("a2", "assistant", "It is Thursday.")] }));
     const posts = settled.effects.filter((e) => e.tag === "postResult").map((e) => e.tag === "postResult" ? e.id : "");
     assert.deepEqual(posts, ["w2"], "the replaced answer is not relayed twice");
+  });
+
+  it("reports a replaced job that Pi finished as done before its result, so both sides call it complete", () => {
+    // Decision: a result that finished before the redirect is complete. Voice
+    // already marked w1 superseded; without "done" first it framed the answer as
+    // partial while the shared log stored it as a complete [Pi result].
+    const opened = step(on({ job: runningJob("find FIXME", { bound: true }) }), { tag: "work", id: asWork("w2"), brief: asUser("sleep then date") }, world({ idle: false }));
+    const finished = answerEntry("a1", "Found one FIXME in main.py.", "stop");
+    const branch = [
+      message("u1", "user", jobPrompt(asWork("w1"), asUser("find FIXME"))),
+      finished,
+      message("u2", "user", jobPrompt(asWork("w2"), asUser("sleep then date"))),
+    ];
+    const bound = step(opened.state, { tag: "jobMessage", id: asWork("w2") }, world({ branch, idle: false }));
+    const order = bound.effects
+      .filter((e) => (e.tag === "sendJobUpdate" || e.tag === "postResult") && e.id === "w1")
+      .map((e) => e.tag === "sendJobUpdate" ? `update:${e.status}` : e.tag);
+    assert.deepEqual(order, ["update:done", "postResult"]);
+    const saved = bound.effects.find((e) => e.tag === "recordTurn");
+    assert.ok(saved && saved.tag === "recordTurn" && saved.turn.text.startsWith('[Pi result "find FIXME"]'));
+  });
+
+  it("keeps a replaced job that Pi was cut off in mid-turn partial on both sides", () => {
+    const opened = step(on({ job: runningJob("find FIXME", { bound: true }) }), { tag: "work", id: asWork("w2"), brief: asUser("sleep then date") }, world({ idle: false }));
+    const midTurn = answerEntry("a1", "Let me search main.py first.", "toolUse");
+    const branch = [
+      message("u1", "user", jobPrompt(asWork("w1"), asUser("find FIXME"))),
+      midTurn,
+      message("u2", "user", jobPrompt(asWork("w2"), asUser("sleep then date"))),
+    ];
+    assert.equal(answerFinished(branch, asWork("w1")), false);
+    const bound = step(opened.state, { tag: "jobMessage", id: asWork("w2") }, world({ branch, idle: false }));
+    assert.ok(!bound.effects.some((e) => e.tag === "sendJobUpdate" && e.id === "w1" && e.status === "done"));
+    const post = bound.effects.find((e) => e.tag === "postResult");
+    assert.equal(post && post.tag === "postResult" ? post.id : undefined, "w1");
+    const saved = bound.effects.find((e) => e.tag === "recordTurn");
+    assert.ok(saved && saved.tag === "recordTurn" && saved.turn.text.startsWith("[Partial Pi findings; task superseded]"));
   });
 
   it("does not relay a replaced job that Pi never answered", () => {

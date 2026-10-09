@@ -166,9 +166,11 @@ struct PiJobTracker {
 
     /// Fold an extension `job_update` into the mirror. Terminal states stick:
     /// a stale `working` arriving after a supersede must not resurrect the job.
+    /// One exception: `superseded -> done`, sent when Pi had already finished
+    /// the old job's answer before the redirect, so it is complete, not partial.
     mutating func update(id: String, state: State, note: String?, now: Date = Date()) {
         guard var job = jobs[id] else { return }
-        if isTerminal(job.state) { return }
+        if isTerminal(job.state), !(job.state == .superseded && state == .done) { return }
         job.state = state
         job.updatedAt = now
         if let note = note?.trimmingCharacters(in: .whitespacesAndNewlines), !note.isEmpty {
