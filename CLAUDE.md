@@ -25,12 +25,13 @@ uv sync                       # install into this project's own .venv
 ./run-browser.sh --reuse-running  # keep current service, TERM any stale/foreign/unknown/hung Chatbot service; Voice.app launches this way
 
 uv run ruff check src tests .cursor/skills
-uv run ruff format --check src tests .cursor/skills   # CI checks formatting; README omits this
+uv run ruff format --check src tests .cursor/skills
 uv run mypy src
 uv run python -c "import nltk; nltk.download('punkt_tab')"  # required for local pytest
 uv run pytest -q
 uv run pytest tests/test_text_prompt.py::test_text_prompt_keeps_persona_in_session_prompt -q   # single test
 
+(cd pi-voice/src/worker && npm ci --ignore-scripts)   # worker tests import pi-ai
 node --test 'pi-voice/src/*.test.ts' 'pi-voice/src/worker/*.test.ts'   # pi-voice extension tests (Node ≥22.18 strips types)
 (cd pi-voice && npm ci --ignore-scripts && npm run typecheck)   # tsc against pinned Pi 1.1.0 types; CI runs it
 bash macos/Voice/scripts/test.sh       # Swift runtime tests (swiftc, no Xcode project); use check(), never assert()

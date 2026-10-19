@@ -19,8 +19,12 @@ jobs:
         run: |
           npm ci --ignore-scripts
           npm run typecheck
+      - name: Pi worker dependencies
+        working-directory: pi-voice/src/worker
+        run: npm ci --ignore-scripts
       - name: Pi extension tests
-        run: node --test 'pi-voice/src/*.test.ts'
+        working-directory: pi-voice
+        run: npm test
       - name: Swift runtime tests
         run: bash macos/Voice/scripts/test.sh
 

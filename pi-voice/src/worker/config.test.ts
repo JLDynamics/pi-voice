@@ -173,15 +173,32 @@ describe("worker project instructions", () => {
 
 describe("worker skills", () => {
   it("discovers every installed skill, across both roots", async () => {
-    // @ts-expect-error -- plain .mjs module
-    const { findSkills } = await import("./config.mjs");
-    const skills = await findSkills();
-    const names = skills.map((s: { name: string }) => s.name);
-    assert.ok(names.length > 0, "at least one skill is installed on this machine");
-    assert.deepEqual(names, [...names].sort(), "sorted for a stable listing");
-    assert.equal(new Set(names).size, names.length, "no duplicate names across roots");
-    for (const s of skills) {
-      assert.ok(s.file.endsWith("/SKILL.md"), `${s.name} points at a SKILL.md`);
+    const fs = await import("node:fs");
+    const home = fs.mkdtempSync(join(tmpdir(), "home-"));
+    const project = fs.mkdtempSync(join(tmpdir(), "proj-"));
+    const skill = (root: string, name: string) => {
+      fs.mkdirSync(join(root, name), { recursive: true });
+      fs.writeFileSync(join(root, name, "SKILL.md"), `# ${name}`);
+    };
+    skill(join(home, ".pi", "agent", "skills"), "shared");
+    skill(join(home, ".agents", "skills"), "shared");
+    skill(join(home, ".agents", "skills"), "zeta");
+    skill(join(project, ".pi", "skills"), "alpha");
+    const realHome = process.env.HOME;
+    process.env.HOME = home;
+    try {
+      // @ts-expect-error -- plain .mjs module
+      const { findSkills } = await import("./config.mjs");
+      const skills = await findSkills(project);
+      const names = skills.map((s: { name: string }) => s.name);
+      assert.deepEqual(names, ["alpha", "shared", "zeta"], "sorted, one entry per name across all three roots");
+      const shared = skills.find((s: { name: string }) => s.name === "shared");
+      assert.ok(shared.dir.startsWith(join(home, ".pi", "agent", "skills")), "the first root wins a duplicate name");
+      for (const s of skills) {
+        assert.ok(s.file.endsWith("/SKILL.md"), `${s.name} points at a SKILL.md`);
+      }
+    } finally {
+      process.env.HOME = realHome;
     }
   });
 
