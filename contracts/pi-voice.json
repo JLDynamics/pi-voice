@@ -139,6 +139,7 @@
   },
   "worker": {
     "_doc": "NDJSON between the extension and the pi-durable worker host (pi-voice/src/worker/host.mjs). This is the parallel path: one host process runs N jobs at once, each in its own conversation. `list` and `status` are the read-only coordination verbs; `spawn` on a live id steers it.",
+    "singleModes": ["single", "steer", "pi", "off"],
     "env": {
       "host": "VOICE_WORKER_HOST",
       "model": "VOICE_WORKER_MODEL",

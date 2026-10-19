@@ -10,6 +10,7 @@ change freely while the contract stays checked.
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
@@ -169,3 +170,19 @@ def test_spawn_thinking_is_not_for_confirmations_or_status():
     assert dispatch.index("piJobs.activeRepeat(of: brief)") < dispatch.index("onSpawnThinking?(id, brief, effort)")
     tracker = (SESSION_SOURCES / "PiJobTracker.swift").read_text()
     assert '"status": "already_working"' in tracker
+
+
+def test_voice_workers_modes_agree_across_languages() -> None:
+    """`VOICE_WORKERS` is read by the extension (TS) and by Voice.app (Swift); both turn parallel jobs off for the same values."""
+    modes = json.loads((ROOT / "contracts" / "pi-voice.json").read_text())["worker"]["singleModes"]
+    ts = (ROOT / "pi-voice" / "src" / "worker.ts").read_text()
+    swift = (SESSION_SOURCES / "VoiceTools.swift").read_text()
+    ts_list = re.search(r"SINGLE_WORKER_MODES = \[(.*?)\]", ts, re.S)
+    swift_list = re.search(r"return !\[(.*?)\]\.contains\(mode\)", swift, re.S)
+    assert ts_list and swift_list, "VOICE_WORKERS mode list moved; update this test and the contract together"
+    assert re.findall(r'"(\w+)"', ts_list.group(1)) == modes, (
+        "pi-voice/src/worker.ts differs from contracts/pi-voice.json worker.singleModes"
+    )
+    assert re.findall(r'"(\w+)"', swift_list.group(1)) == modes, (
+        "VoiceTools.parallelWorkers differs from contracts/pi-voice.json worker.singleModes"
+    )
