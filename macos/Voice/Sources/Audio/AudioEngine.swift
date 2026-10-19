@@ -75,6 +75,15 @@ final class AudioEngine {
         engine?.outputNode.lastRenderTime?.isSampleTimeValid == true
     }
 
+    /// The only caller of `AVAudioPlayerNode.play()`. Before the engine has rendered once it raises an
+    /// uncatchable `player did not see an IO cycle` exception. Returns false when IO is not rendering yet.
+    @discardableResult
+    private func startPlayerIfRendering() -> Bool {
+        guard isAudioIORendering else { return false }
+        if !player.isPlaying { player.play() }
+        return true
+    }
+
     enum AudioError: LocalizedError, FatalStartError {
         case microphoneDenied
         case engineFailed
@@ -112,12 +121,8 @@ final class AudioEngine {
         engine.prepare()
         do {
             try engine.start()
-            if !player.isPlaying {
-                if isAudioIORendering {
-                    player.play()
-                } else {
-                    NSLog("[AudioEngine] audio IO unavailable during restart; skipping player.play")
-                }
+            if !startPlayerIfRendering() {
+                NSLog("[AudioEngine] audio IO unavailable during restart; skipping player.play")
             }
             NSLog("[AudioEngine] restarted engine after config change; running=\(engine.isRunning)")
         } catch {
@@ -242,7 +247,7 @@ final class AudioEngine {
         let waitMs = Int((Date().timeIntervalSince(ioWaitStart) * 1000).rounded())
         NSLog("[AudioEngine] first IO cycle after \(waitMs) ms")
 
-        if !player.isPlaying { player.play() }
+        startPlayerIfRendering()
         let inFmt = engine.inputNode.inputFormat(forBus: 0)
         ioFormat = AVAudioFormat(
             commonFormat: .pcmFormatFloat32,
@@ -303,7 +308,7 @@ final class AudioEngine {
     var isPlaying: Bool { playback.isAudible }
 
     func play(_ buffer: AVAudioPCMBuffer) {
-        if !player.isPlaying && isAudioIORendering { player.play() }
+        startPlayerIfRendering()
         let token = playback.enqueue()
         // dataPlayedBack tracks the speakers, not merely data consumed by the engine.
         player.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { [weak self] _ in
@@ -316,7 +321,7 @@ final class AudioEngine {
         // Invalidate callbacks before stop() releases old scheduled buffers.
         playback.clear()
         player.stop()
-        if engine?.isRunning == true && isAudioIORendering { player.play() }
+        if engine?.isRunning == true { startPlayerIfRendering() }
     }
 
     private func wireIO(format: AVAudioFormat?) {
