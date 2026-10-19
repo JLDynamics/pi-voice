@@ -3,7 +3,7 @@ import { describe, it } from "node:test";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { decodeWorkerLine, durableWorkers, toVoiceEvent } from "./worker.ts";
+import { decodeWorkerLine, durableWorkers, hostEnv, toVoiceEvent } from "./worker.ts";
 import { asUser, asWork, step, type VoiceState, type StepWorld } from "./voice.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -231,5 +231,37 @@ describe("worker job visibility", () => {
       false,
       "no duplicate entry when the job is in Pi's own session",
     );
+  });
+});
+
+describe("worker host state location", () => {
+  const withConfig = (value: string | undefined, run: () => void) => {
+    const saved = process.env.PI_VOICE_CONFIG;
+    if (value === undefined) delete process.env.PI_VOICE_CONFIG;
+    else process.env.PI_VOICE_CONFIG = value;
+    try {
+      run();
+    } finally {
+      if (saved === undefined) delete process.env.PI_VOICE_CONFIG;
+      else process.env.PI_VOICE_CONFIG = saved;
+    }
+  };
+
+  it("keeps job state under PI_VOICE_CONFIG, so an isolated run never touches the real one", () => {
+    withConfig("/tmp/isolated-config", () => {
+      assert.equal(hostEnv({}).VOICE_WORKER_STATE, "/tmp/isolated-config/workers");
+    });
+  });
+
+  it("lets an explicit VOICE_WORKER_STATE win", () => {
+    withConfig("/tmp/isolated-config", () => {
+      assert.equal(hostEnv({ VOICE_WORKER_STATE: "/tmp/elsewhere" }).VOICE_WORKER_STATE, "/tmp/elsewhere");
+    });
+  });
+
+  it("passes the rest of the environment through unchanged", () => {
+    withConfig("/tmp/isolated-config", () => {
+      assert.equal(hostEnv({ VOICE_WORKER_MODEL: "m" }).VOICE_WORKER_MODEL, "m");
+    });
   });
 });

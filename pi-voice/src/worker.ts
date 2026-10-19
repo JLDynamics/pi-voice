@@ -18,6 +18,7 @@ import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { JobUpdateStatus, ProgressPhase, ThinkingEffort } from "./child.ts";
+import { configDir } from "./session.ts";
 import type { Effect, VoiceEvent, WorkId } from "./voice.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -110,6 +111,15 @@ export function decodeWorkerLine(raw: string): WorkerOut | { ignored: string } {
 }
 
 /**
+ * The host's environment. Job state defaults to `<configDir>/workers` so a run with its own
+ * `PI_VOICE_CONFIG` never writes to, or resumes jobs from, the real config; an explicit
+ * `VOICE_WORKER_STATE` still wins.
+ */
+export function hostEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  return { VOICE_WORKER_STATE: join(configDir(), "workers"), ...env };
+}
+
+/**
  * The worker host process. One per voice call: the host holds the `pi-durable`
  * session, so starting a second would split the jobs across two harnesses.
  */
@@ -127,7 +137,7 @@ export class WorkerHost {
     if (!existsSync(script)) throw new Error(`worker host missing: ${script}`);
     const proc = spawn(process.execPath, [script], {
       stdio: ["pipe", "pipe", "pipe"],
-      env: process.env,
+      env: hostEnv(),
     });
     const host = new WorkerHost(proc);
     proc.stdout?.setEncoding("utf8");
