@@ -187,7 +187,7 @@ describe("worker skills", () => {
 
   it("finds a skill under a project-local .pi/skills root too", async () => {
     const { mkdtempSync: mk, writeFileSync: wr, mkdirSync: mkdir } = await import("node:fs");
-    const dir = mk("proj-");
+    const dir = mk(join(tmpdir(), "proj-"));
     mkdir(join(dir, ".pi", "skills", "local-only"), { recursive: true });
     wr(join(dir, ".pi", "skills", "local-only", "SKILL.md"), "# Local\nDo the thing.");
     // @ts-expect-error -- plain .mjs module
@@ -198,7 +198,7 @@ describe("worker skills", () => {
 
   it("ignores a folder without a SKILL.md", async () => {
     const { mkdtempSync: mk, mkdirSync: mkdir, writeFileSync: wr } = await import("node:fs");
-    const dir = mk("proj-");
+    const dir = mk(join(tmpdir(), "proj-"));
     mkdir(join(dir, ".pi", "skills", "not-a-skill"), { recursive: true });
     wr(join(dir, ".pi", "skills", "not-a-skill", "README.md"), "nope");
     // @ts-expect-error -- plain .mjs module
