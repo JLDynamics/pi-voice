@@ -13,7 +13,8 @@
   ],
   "pi": {
     "extensions": [
-      "./src/index.ts"
+      "./src/index.ts",
+      "./src/bg.ts"
     ]
   },
   "peerDependencies": {
