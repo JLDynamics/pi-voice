@@ -96,11 +96,11 @@ The server-side `bash` research tool still exists for clients that publish it (e
 ## Development
 
 ```bash
-uv run ruff check src tests
-uv run ruff format --check src tests
+uv run ruff check src tests .cursor/skills
+uv run ruff format --check src tests .cursor/skills
 uv run mypy src
 uv run pytest -q
-node --test 'pi-voice/src/*.test.ts'
+node --test 'pi-voice/src/*.test.ts' 'pi-voice/src/worker/*.test.ts'
 bash macos/Voice/scripts/test.sh
 uv run python scripts/verify-voice.py --research   # live bash/curl research, services must be up
 ```
