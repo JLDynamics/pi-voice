@@ -98,8 +98,9 @@ final class SessionController {
     var onSpokenDelta: ((String) -> Void)?
     var onAgentDone: (() -> Void)?
     var onSpoken: ((String) -> Void)?
-    var onSpawnThinking: ((String, String) -> Void)?
+    var onSpawnThinking: ((String, String, String) -> Void)?
     var onStopThinking: (() -> Void)?
+    var onStatusRequest: ((String, String) -> Void)?
     var onFatalStart: ((String) -> Void)?
 
     private var pendingUserText: String?
@@ -216,11 +217,14 @@ final class SessionController {
             headless.onSpoken = { [weak self] text in
                 self?.onSpoken?(text)
             }
-            headless.onSpawnThinking = { [weak self] id, brief in
-                self?.onSpawnThinking?(id, brief)
+            headless.onSpawnThinking = { [weak self] id, brief, effort in
+                self?.onSpawnThinking?(id, brief, effort)
             }
             headless.onStopThinking = { [weak self] in
                 self?.onStopThinking?()
+            }
+            headless.onStatusRequest = { [weak self] id, request in
+                self?.onStatusRequest?(id, request)
             }
         }
     }
@@ -363,6 +367,14 @@ final class SessionController {
 
     func updatePiJob(id: String, status: String, note: String?) {
         (backend as? HeadlessBackend)?.updatePiJob(id: id, status: status, note: note)
+    }
+
+    func updatePiProgress(id: String, tool: String, phase: String, summary: String, active: String) {
+        (backend as? HeadlessBackend)?.updatePiProgress(id: id, tool: tool, phase: phase, summary: summary, active: active)
+    }
+
+    func resolvePiStatus(id: String, payloadJson: String) {
+        (backend as? HeadlessBackend)?.resolvePiStatus(id: id, payloadJson: payloadJson)
     }
 
     // MARK: - Transcript

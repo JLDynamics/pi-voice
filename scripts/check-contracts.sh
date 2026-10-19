@@ -5,7 +5,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 SWIFT_SUITE="bash macos/Voice/scripts/test.sh"
-TS_SUITE="node --test 'pi-voice/src/*.test.ts'"
+TS_SUITE="node --test 'pi-voice/src/*.test.ts' 'pi-voice/src/worker/*.test.ts'"
 PY_SUITE="uv run pytest -q tests/test_contract.py tests/test_voice_prompt.py"
 
 run_all_suites() {
@@ -59,14 +59,27 @@ MUTATIONS=(
   'Swift HeadlessBridge emit key "item_id" -> "itemId"|macos/Voice/Sources/Session/HeadlessBridge.swift|"item_id": itemId ?? ""|"itemId": itemId ?? ""|bash macos/Voice/scripts/test.sh'
   'Swift HeadlessBridge inbound "speak" -> "speech"|macos/Voice/Sources/Session/HeadlessBridge.swift|string("speak")|string("speech")|bash macos/Voice/scripts/test.sh'
   'Swift VoiceTools HeadlessTools "spawn_thinking" -> "spawn_think"|macos/Voice/Sources/Session/VoiceTools.swift|static let spawnThinking = "spawn_thinking"|static let spawnThinking = "spawn_think"|bash macos/Voice/scripts/test.sh'
+  'Swift VoiceTools check_thinking -> check_status|macos/Voice/Sources/Session/VoiceTools.swift|static let checkThinking = "check_thinking"|static let checkThinking = "check_status"|bash macos/Voice/scripts/test.sh'
+  'Swift VoiceTools effort argument -> efforts|macos/Voice/Sources/Session/VoiceTools.swift|static let effortArgument = "effort"|static let effortArgument = "efforts"|bash macos/Voice/scripts/test.sh'
+  'Swift PiJobTracker default effort off -> high|macos/Voice/Sources/Session/PiJobTracker.swift|static let defaultEffort = "off"|static let defaultEffort = "high"|bash macos/Voice/scripts/test.sh'
+  'Swift PiJobTracker parallel ack claims replacement|macos/Voice/Sources/Session/PiJobTracker.swift|"status": "started_alongside", "id": id|"status": "steering", "id": id|bash macos/Voice/scripts/test.sh'
+  'Swift HeadlessBridge inbound "payload" -> "request"|macos/Voice/Sources/Session/HeadlessBridge.swift|string("payload").map { payload in|string("request").map { payload in|bash macos/Voice/scripts/test.sh'
   'Swift PiJobTracker "[FINAL]" (finalChannel) -> "[DONE]"|macos/Voice/Sources/Session/PiJobTracker.swift|return "[FINAL] Partial findings|return "[DONE] Partial findings|bash macos/Voice/scripts/test.sh'
   'Swift PiJobTracker case superseded -> case replaced|macos/Voice/Sources/Session/PiJobTracker.swift|case superseded|case replaced|bash macos/Voice/scripts/test.sh'
   'Swift VoiceRuntime "VOICE_HISTORY" -> "VOICE_HIST"|macos/Voice/Sources/Session/VoiceRuntime.swift|static let variable = "VOICE_HISTORY"|static let variable = "VOICE_HIST"|bash macos/Voice/scripts/test.sh'
   'TS child.ts parseLine object.item_id -> object.itemId|pi-voice/src/child.ts|const itemId = typeof object.item_id === "string" ? object.item_id : "";|const itemId = typeof object.itemId === "string" ? object.itemId : "";|node --test '\''pi-voice/src/*.test.ts'\'''
+  'TS child.ts progress phase field -> phases|pi-voice/src/child.ts|({ type: "progress", id, tool, phase, summary, active })|({ type: "progress", id, tool, phases: phase, summary, active })|node --test '\''pi-voice/src/*.test.ts'\'''
+  'TS child.ts effort decode always off|pi-voice/src/child.ts|return typeof value === "string" && (THINKING_EFFORTS as readonly string[]).includes(value)|return typeof value !== "string"|node --test '\''pi-voice/src/*.test.ts'\'''
+  'TS worker.ts parallel activity wording -> tool name|pi-voice/src/worker.ts|return `Pi is ${verb}${summary|return `Pi is ${tool}${summary|node --test '\''pi-voice/src/*.test.ts'\'''
+  'TS work.ts durable path supersedes the first job|pi-voice/src/work.ts|if (!state.worker \&\& state.job.tag === "running") {|if (state.job.tag === "running") {|node --test '\''pi-voice/src/*.test.ts'\'''
+  'TS voice.ts restore ignores a mid-job user change|pi-voice/src/voice.ts|if (current !== jobEffort) return;|if (false) return;|node --test '\''pi-voice/src/*.test.ts'\'''
+  'TS work.ts snapshot note drops the no-stop rule|pi-voice/src/work.ts|This is Pi'\''s answer so far and the task may still be running.|This is Pi'\''s answer so far.|node --test '\''pi-voice/src/*.test.ts'\'''
   'TS child.ts toVoice muted } -> mute: muted }|pi-voice/src/child.ts|muted }|mute: muted }|node --test '\''pi-voice/src/*.test.ts'\'''
   'TS child.ts JOB_UPDATE_STATUSES "dropped" -> "declined"|pi-voice/src/child.ts|"dropped"|"declined"|node --test '\''pi-voice/src/*.test.ts'\'''
   'TS child.ts VOICE_HISTORY -> VOICE_HIST|pi-voice/src/child.ts|VOICE_HISTORY|VOICE_HIST|node --test '\''pi-voice/src/*.test.ts'\'''
-  'Python voice_prompt "[STATUS]" -> "[STATE]"|src/chatbot/LLM/voice_prompt.py|[STATUS] is silent background progress — do not speak it. Asked how it'\''s going, answer from the latest [STATUS]|[STATE] is silent background progress — do not speak it. Asked how it'\''s going, answer from the latest [STATE]|uv run pytest -q tests/test_contract.py tests/test_voice_prompt.py'
+  'Python voice_prompt "[STATUS]" -> "[STATE]"|src/chatbot/LLM/voice_prompt.py|[STATUS] is silent background progress — do not speak it. [FINAL]|[STATE] is silent background progress — do not speak it. [FINAL]|uv run pytest -q tests/test_contract.py tests/test_voice_prompt.py'
+  'Python voice_prompt check_thinking -> check_status|src/chatbot/LLM/voice_prompt.py|call check_thinking once and answer from what it returns|call check_status once and answer from what it returns|uv run pytest -q tests/test_contract.py tests/test_voice_prompt.py'
+  'Python voice_prompt steer rule dropped|src/chatbot/LLM/voice_prompt.py|That steers Pi: the latest brief wins and replaces the current task.|That sends Pi a new brief.|uv run pytest -q tests/test_contract.py tests/test_voice_prompt.py'
 )
 
 RESULTS=()

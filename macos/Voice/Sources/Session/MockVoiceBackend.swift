@@ -15,8 +15,10 @@ final class MockVoiceBackend: VoiceBackend, HeadlessBackend {
     var onToolDone: ((String, String) -> Void)?
     var onToolsCancelled: (() -> Void)?
     var onSpoken: ((String) -> Void)?
-    var onSpawnThinking: ((String, String) -> Void)?
+    var onSpawnThinking: ((String, String, String) -> Void)?
     var onStopThinking: (() -> Void)?
+    /// A `check_thinking` read: (job id or "", the question the user asked).
+    var onStatusRequest: ((String, String) -> Void)?
     var interruptCount = 0
     var ingestedUserText: [String] = []
     var postedResults: [(id: String, speak: String, full: String)] = []
@@ -33,6 +35,18 @@ final class MockVoiceBackend: VoiceBackend, HeadlessBackend {
 
     func updatePiJob(id: String, status: String, note: String?) {
         piJobUpdates.append((id: id, status: status, note: note))
+    }
+
+    var piProgress: [(id: String, tool: String, phase: String, summary: String, active: String)] = []
+
+    func updatePiProgress(id: String, tool: String, phase: String, summary: String, active: String) {
+        piProgress.append((id: id, tool: tool, phase: phase, summary: summary, active: active))
+    }
+
+    var resolvedStatus: [(id: String, payload: String)] = []
+
+    func resolvePiStatus(id: String, payloadJson: String) {
+        resolvedStatus.append((id: id, payload: payloadJson))
     }
 
     var historyMessages: [(role: String, text: String, name: String?)] = []

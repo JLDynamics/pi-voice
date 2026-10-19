@@ -28,7 +28,17 @@ import {
   type VoiceState,
 } from "./voice.ts";
 import { fullResult, lastAssistantText, openJob, settleJob } from "./work.ts";
-import { answerFinished, answerForJob, jobIdFromText, jobPrompt, lastUserJobId, toolProgress, webSourceCount } from "./work.ts";
+import {
+  answerFinished,
+  answerForJob,
+  jobIdFromText,
+  jobPrompt,
+  lastUserJobId,
+  snapshotFor,
+  toolProgress,
+  toolSummary,
+  webSourceCount,
+} from "./work.ts";
 
 function pid(n: number): ChildPid {
   return n as ChildPid;
@@ -59,6 +69,7 @@ function runningJob(brief: string, over: Partial<Extract<Job, { tag: "running" }
     bound: false,
     afterEntryId: "leaf0",
     lastNote: null,
+    effort: "off",
     ...over,
   };
 }
@@ -828,11 +839,24 @@ describe("parseLine", () => {
       text: "Hey",
       itemId: "response-1",
     });
+    // An older Voice build sends no effort; the fast default is the safe read.
     assert.deepEqual(parseLine('{"type":"work","id":"w1","brief":"Tesla stock price"}'), {
       tag: "work",
       id: "w1",
       brief: "Tesla stock price",
+      effort: "off",
     });
+    assert.deepEqual(parseLine('{"type":"work","id":"w2","brief":"why is CI red","effort":"high"}'), {
+      tag: "work",
+      id: "w2",
+      brief: "why is CI red",
+      effort: "high",
+    });
+    assert.equal(
+      (parseLine('{"type":"work","id":"w3","brief":"x","effort":"banana"}') as { effort?: string }).effort,
+      "off",
+      "an unknown effort is refused on the wire too",
+    );
     assert.equal(parseLine("not-json"), undefined);
     assert.equal(parseLine('{"type":"heard","text":"  "}'), undefined);
     assert.equal(parseLine('{"type":"transcript","text":"hello"}'), undefined);
@@ -941,6 +965,152 @@ describe("toolProgress", () => {
     assert.equal(toolProgress("update", "web_search"), "Pi is searching the web; results are arriving");
     assert.equal(toolProgress("end", "web_search"), "Pi finished searching the web; reviewing the result");
     assert.equal(toolProgress("error", "web_search"), "Pi's web search failed; Pi is continuing");
+  });
+});
+
+describe("toolSummary", () => {
+  it("names the target the user already knows about, never a result", () => {
+    assert.equal(toolSummary("web_search", { query: "swift 6 concurrency" }), "swift 6 concurrency");
+    assert.equal(toolSummary("read", { path: "src/chatbot/LLM/chat.py" }), "src/chatbot/LLM/chat.py");
+    assert.equal(toolSummary("bash", { command: "npm test" }), "npm test");
+    assert.equal(toolSummary("edit", {}), "");
+    assert.equal(toolSummary("mcp_thing", { anything: 1 }), "");
+  });
+
+  it("caps a long command so the status line stays speakable", () => {
+    const long = toolSummary("bash", { command: "x".repeat(200) });
+    assert.equal([...long].length, 60);
+    assert.ok(long.endsWith("…"));
+  });
+});
+
+describe("per-job thinking effort", () => {
+  it("carries the model's effort from the work event onto the running job", () => {
+    const opened = step(
+      on(),
+      { tag: "work", id: asWork("w1"), brief: asUser("refactor the auth flow"), effort: "high" },
+      world({ idle: true, now: 1000 }),
+    );
+    if (opened.state.tag !== "on" || opened.state.job.tag !== "running") throw new Error("expected running");
+    assert.equal(opened.state.job.effort, "high");
+  });
+
+  it("defaults to off, so a handoff without effort stays on the fast path", () => {
+    const opened = step(on(), { tag: "work", id: asWork("w1"), brief: asUser("list files") }, world({ idle: true }));
+    if (opened.state.tag !== "on" || opened.state.job.tag !== "running") throw new Error("expected running");
+    assert.equal(opened.state.job.effort, "off");
+  });
+
+  it("sets the picked level for the job's turn, then restores the session's level", () => {
+    const levels: string[] = ["high"];
+    const pi = {
+      getThinkingLevel: () => levels[levels.length - 1],
+      setThinkingLevel: (level: string) => {
+        levels.push(level);
+      },
+    };
+    const voice = Voice.attach(pi as never);
+    const event = { prompt: jobPrompt(asWork("w1"), asUser("list files")), systemPromptOptions: { sections: {} as Record<string, string> } };
+    (voice as unknown as { state: VoiceState }).state = on({ job: runningJob("list files", { effort: "off" }) });
+    voice.onBeforeAgentStart(event as never, {} as never);
+    assert.equal(levels.at(-1), "off", "the fast default lowers a thinking session for the job");
+
+    // Ending the job puts the user's level back.
+    (voice as unknown as { state: VoiceState }).state = on({ job: runningJob("list files", { effort: "off" }) });
+    voice.feed({ tag: "stopWork" }, undefined);
+    assert.equal(levels.at(-1), "high", "the pre-job level is restored");
+  });
+
+  it("raises the level when the model asks for more thinking", () => {
+    const levels: string[] = ["off"];
+    const pi = {
+      getThinkingLevel: () => levels[levels.length - 1],
+      setThinkingLevel: (level: string) => {
+        levels.push(level);
+      },
+    };
+    const voice = Voice.attach(pi as never);
+    const event = { prompt: jobPrompt(asWork("w1"), asUser("why are the tests flaky")), systemPromptOptions: { sections: {} as Record<string, string> } };
+    (voice as unknown as { state: VoiceState }).state = on({ job: runningJob("why are the tests flaky", { effort: "high" }) });
+    voice.onBeforeAgentStart(event as never, {} as never);
+    assert.equal(levels.at(-1), "high", "a hard job gets the level the model asked for");
+  });
+
+  it("never overwrites a level the user changed while the job ran", () => {
+    const levels: string[] = ["off"];
+    const pi = {
+      getThinkingLevel: () => levels[levels.length - 1],
+      setThinkingLevel: (level: string) => {
+        levels.push(level);
+      },
+    };
+    const voice = Voice.attach(pi as never);
+    const event = { prompt: jobPrompt(asWork("w1"), asUser("list files")), systemPromptOptions: { sections: {} as Record<string, string> } };
+    (voice as unknown as { state: VoiceState }).state = on({ job: runningJob("list files", { effort: "off" }) });
+    voice.onBeforeAgentStart(event as never, {} as never);
+    // The user raises it mid-job (as /thinking would).
+    levels.push("max");
+    voice.feed({ tag: "stopWork" }, undefined);
+    assert.equal(levels.at(-1), "max", "the user's mid-job change wins over the restore");
+  });
+});
+
+describe("check_thinking (statusRequest)", () => {
+  const open = () => {
+    const opened = step(on(), { tag: "work", id: asWork("w1"), brief: asUser("find the flaky test") }, world({ idle: true, now: 1000 }));
+    return step(opened.state, { tag: "jobMessage", id: asWork("w1") }, world({ now: 1100 }));
+  };
+
+  it("answers from the live job without binding, steering or settling it", () => {
+    const bound = open();
+    const branch = [message("u1", "user", jobPrompt(asWork("w1"), asUser("find the flaky test")))];
+    const answered = step(
+      { ...bound.state, job: { ...(bound.state as Extract<VoiceState, { tag: "on" }>).job, lastNote: "Pi is running a command" } } as VoiceState,
+      { tag: "statusRequest", id: "", request: "how is it going" },
+      world({ now: 41_000, branch, idle: false }),
+    );
+    const snap = answered.effects.find((effect) => effect.tag === "sendSnapshot");
+    assert.ok(snap && snap.tag === "sendSnapshot");
+    const payload = JSON.parse(snap.payload);
+    assert.equal(payload.status, "working");
+    assert.equal(payload.id, "w1");
+    assert.equal(payload.request, "how is it going");
+    assert.equal(payload.elapsed_s, 40);
+    assert.equal(payload.doing, "Pi is running a command");
+    assert.match(payload.note, /Do not call stop_thinking/);
+    // Read-only: the job is still the same live job, and nothing else was sent.
+    assert.deepEqual(tags(answered.effects), ["sendSnapshot"]);
+    if (answered.state.tag !== "on" || answered.state.job.tag !== "running") throw new Error("job must survive a read");
+    assert.equal(answered.state.job.id, asWork("w1"));
+    assert.equal(answered.state.job.bound, true);
+  });
+
+  it("includes Pi's answer so far when the branch already has one", () => {
+    const bound = open();
+    const branch = [
+      message("u1", "user", jobPrompt(asWork("w1"), asUser("find the flaky test"))),
+      answerEntry("a1", "It is the retry helper in test_vad_iterator.py.", "toolUse"),
+    ];
+    const answered = step(bound.state, { tag: "statusRequest", id: asWork("w1"), request: "what did it find" }, world({ now: 5000, branch, idle: false }));
+    const snap = answered.effects.find((effect) => effect.tag === "sendSnapshot");
+    const payload = JSON.parse(snap && snap.tag === "sendSnapshot" ? snap.payload : "{}");
+    assert.match(payload.answer, /retry helper/);
+    assert.equal(payload.status, "working", "a mid-turn answer does not mean done");
+  });
+
+  it("reports idle when nothing was handed over, and never invents findings", () => {
+    const answered = step(on(), { tag: "statusRequest", id: "", request: "status" }, world());
+    const snap = answered.effects.find((effect) => effect.tag === "sendSnapshot");
+    const payload = JSON.parse(snap && snap.tag === "sendSnapshot" ? snap.payload : "{}");
+    assert.equal(payload.status, "idle");
+    assert.equal(payload.answer, undefined);
+  });
+
+  it("snapshotFor falls back to Pi's last answer when no job is live", () => {
+    const branch = [answerEntry("a9", "The build is green.", "stop")];
+    const snap = snapshotFor(on(), world({ branch }), "", "what happened");
+    assert.equal(snap.status, "settled");
+    assert.equal(snap.answer, "The build is green.");
   });
 });
 

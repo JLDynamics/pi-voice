@@ -1,8 +1,8 @@
 import { delegationForHandoff } from "./delegation.ts";
 import type { TurnKind } from "./history.ts";
+import { snapshotFor } from "./work.ts";
 import {
-  bindJob,
-  lastUserJobId,
+  bindJob,  lastUserJobId,
   openJob,
   priorFindings,
   settleJob,
@@ -37,7 +37,7 @@ export function stepJob(state: VoiceState, event: VoiceEvent, world: StepWorld):
     const ready: VoiceState = pending
       ? { ...state, heardPending: null, heardItemId: null, transcript: [] }
       : { ...state, transcript: [] };
-    const job = openJob(ready, event.id, event.brief, world);
+    const job = openJob(ready, event.id, event.brief, world, event.effort);
     const record: Effect[] = pending
       ? [{ tag: "recordTurn", turn: { role: "user", text: pending }, turnKind: "voice" as TurnKind }]
       : [];
@@ -68,20 +68,97 @@ export function stepJob(state: VoiceState, event: VoiceEvent, world: StepWorld):
   }
 
   if (event.tag === "jobProgress") {
-    if (state.job.tag !== "running" || !state.job.bound || lastUserJobId(world.branch) !== state.job.id) return keep(state);
+    // Progress is also how the strip learns Pi is working before the job is
+    // bound; only the note is mirrored, and only for our own live job.
+    if (state.job.tag !== "running" || (state.job.bound && lastUserJobId(world.branch) !== state.job.id)) return keep(state);
     const note = event.note.trim();
-    if (!note || state.job.lastNote === note) return keep(state);
-    const next: VoiceState = { ...state, job: { ...state.job, lastNote: note } };
+    if (!note || (state.job.lastNote === note && !event.tool)) return keep(state);
+    const active = event.active ?? state.job.active ?? [];
+    const next: VoiceState = { ...state, job: { ...state.job, lastNote: note, active } };
+    const effects: Effect[] = [
+      { tag: "paint", strip: strip(next, world.now) },
+    ];
+    // A structured transition goes straight to Voice so its status line names
+    // the tool and counts the rest (Codex renders its items the same way).
+    if (event.tool && event.phase) {
+      effects.unshift({
+        tag: "sendProgress",
+        id: state.job.id,
+        tool: event.tool,
+        phase: event.phase,
+        summary: event.summary ?? "",
+        active: active.join(","),
+      });
+    }
+    effects.unshift({
+      tag: "sendJobUpdate",
+      id: state.job.id,
+      status: state.job.bound ? "working" : "queued",
+      note,
+    });
+    return { state: next, effects };
+  }
+
+  if (event.tag === "statusRequest") {
+    // `check_thinking` is a read. It never binds, steers, or settles the job.
+    // On the durable path the host owns the state, so it answers instead.
+    if (state.worker) {
+      return keep(state, [{ tag: "workerAsk", id: event.id, request: event.request }]);
+    }
+    const snap = snapshotFor(state, world, event.id, event.request);
+    return keep(state, [{ tag: "sendSnapshot", id: event.id, payload: JSON.stringify(snap) }]);
+  }
+
+  // ── durable worker path ────────────────────────────────────────────────────
+  // The host reports each job independently, so a second job never has to
+  // destroy the first. Everything below mirrors what the single-session path
+  // does for one job, keyed by id.
+  if (event.tag === "workerStatus") {
+    // The host built this payload from its own job record; pass it through.
+    return keep(state, [{ tag: "sendSnapshot", id: event.id, payload: event.payload }]);
+  }
+
+  if (event.tag === "workerList") {
+    return keep(state, [{ tag: "sendSnapshot", id: "", payload: event.jobs }]);
+  }
+
+  if (event.tag === "workerJob") {
+    // A terminal status for a job we are not tracking is still worth telling
+    // Voice.app: the mirror must not show a phantom job.
+    if (event.status === "failed") {
+      return keep(state, [
+        { tag: "upsertFace", id: `work:${event.id}:done`, kind: "work", text: `failed — ${event.note ?? "no answer"}`, final: true },
+        { tag: "sendJobUpdate", id: event.id, status: "failed", note: event.note },
+        { tag: "notify", message: `Pi job failed: ${event.note ?? "no answer"}`, kind: "warning" },
+      ]);
+    }
+    if (event.status === "stopped" || event.status === "superseded") {
+      return keep(state, [
+        { tag: "upsertFace", id: `work:${event.id}:done`, kind: "work", text: `${event.status} — ${event.note ?? ""}`.trim(), final: true },
+        { tag: "sendJobUpdate", id: event.id, status: event.status, note: event.note },
+      ]);
+    }
+    return keep(state, [{ tag: "sendJobUpdate", id: event.id, status: event.status, note: event.note }]);
+  }
+
+  if (event.tag === "workerResult") {
+    // The host already has the full answer; post it and settle that one job.
+    const job = state.job.tag === "running" && state.job.id === event.id ? state.job : null;
+    const next: VoiceState = job ? { ...state, job: { tag: "none" } } : state;
     return {
       state: next,
       effects: [
         {
-          tag: "sendJobUpdate",
-          id: state.job.id,
-          status: state.job.bound ? "working" : "queued",
-          note,
+          tag: "upsertFace",
+          id: `work:${event.id}:done`,
+          kind: "work",
+          text: `done — ${event.full.length} chars`,
+          final: true,
         },
-        { tag: "paint", strip: strip(next, world.now) },
+        { tag: "sendJobUpdate", id: event.id, status: "done" },
+        { tag: "postResult", id: event.id, speak: event.speak as never, full: event.full },
+        { tag: "recordTurn", turn: { role: "assistant", text: `[Pi result] ${event.full}` }, turnKind: "work" },
+        ...(job ? [{ tag: "paint", strip: strip(next, world.now) } as const] : []),
       ],
     };
   }

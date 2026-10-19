@@ -17,11 +17,38 @@ export type HeadlessIn =
   | { type: "interrupt" }
   | { type: "user"; text: string }
   | { type: "result"; id: string; speak: string; full: string }
-  | { type: "job_update"; id: string; status: JobUpdateStatus; note?: string };
+  | { type: "job_update"; id: string; status: JobUpdateStatus; note?: string }
+  | { type: "progress"; id: string; tool: string; phase: ProgressPhase; summary: string; active: string }
+  | { type: "snapshot"; id: string; payload: string };
 
 /** Job phases the extension reports to Voice (`contracts/pi-voice.json` `jobStatuses`). */
 export const JOB_UPDATE_STATUSES = ["queued", "working", "done", "stopped", "superseded", "dropped", "failed"] as const;
 export type JobUpdateStatus = (typeof JOB_UPDATE_STATUSES)[number];
+
+/**
+ * One tool transition, Codex's item shape reduced to what a spoken status line
+ * needs: which tool, whether it started or ended, a short argument summary, and
+ * every tool still running so Voice can render "+N more".
+ */
+export const PROGRESS_PHASES = ["start", "update", "end", "error"] as const;
+export type ProgressPhase = (typeof PROGRESS_PHASES)[number];
+
+/**
+ * How hard Pi should think on one job, picked by the voice model per handoff
+ * (Codex's `backend_thinking_effort`). `off` is the fast default; pi's only
+ * hook is the session-wide thinking level, so the extension applies it when the
+ * job's turn starts and restores the previous level when the job ends.
+ */
+export const THINKING_EFFORTS = ["off", "minimal", "low", "medium", "high"] as const;
+export type ThinkingEffort = (typeof THINKING_EFFORTS)[number];
+export const DEFAULT_EFFORT: ThinkingEffort = "off";
+
+/** Narrow an untrusted string (a wire field, a model argument) to an effort. */
+export function asEffort(value: unknown): ThinkingEffort {
+  return typeof value === "string" && (THINKING_EFFORTS as readonly string[]).includes(value)
+    ? (value as ThinkingEffort)
+    : DEFAULT_EFFORT;
+}
 
 /**
  * Every stdio message the extension sends Voice. Field names live only here,
@@ -35,6 +62,9 @@ export const toVoice = {
   result: (id: string, speak: string, full: string): HeadlessIn => ({ type: "result", id, speak, full }),
   jobUpdate: (id: string, status: JobUpdateStatus, note?: string): HeadlessIn =>
     note ? { type: "job_update", id, status, note } : { type: "job_update", id, status },
+  progress: (id: string, tool: string, phase: ProgressPhase, summary: string, active: string): HeadlessIn =>
+    ({ type: "progress", id, tool, phase, summary, active }),
+  snapshot: (id: string, payload: string): HeadlessIn => ({ type: "snapshot", id, payload }),
 };
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -144,6 +174,19 @@ export class VoiceChild {
     this.send(toVoice.jobUpdate(id, status, note));
   }
 
+  /** One structured tool transition. Cheap: no JSON of results, no arguments. */
+  sendProgress(id: WorkId, tool: string, phase: ProgressPhase, summary: string, active: string): void {
+    this.note(`job ${id} ${tool} ${phase}${summary ? ` (${summary})` : ""}${active ? ` active=${active}` : ""}`);
+    this.send(toVoice.progress(id, tool, phase, summary, active));
+  }
+
+  /** Answer a `check_thinking` call: the job's live state, serialized. */
+  sendSnapshot(id: WorkId | "", payload: unknown): void {
+    const text = JSON.stringify(payload);
+    this.note(`snapshot ${id || "(current)"} ${text.length} chars`);
+    this.send(toVoice.snapshot(id, text));
+  }
+
   quit(): void {
     this.send(toVoice.quit());
     const proc = this.proc;
@@ -167,7 +210,8 @@ export class VoiceChild {
    * One extension line in Voice's stderr log, so a job id is traceable across
    * this log, Voice's own `[PiJob]` lines, and the `pi-voice.jobs.jsonl` journal.
    */
-  private note(line: string): void {
+  /** One extension line in Voice's stderr log. Public so the worker host can share the log. */
+  note(line: string): void {
     this.log?.write(`${new Date().toISOString()} [pi-voice] ${line}\n`);
   }
 
@@ -196,7 +240,7 @@ export function decodeLine(raw: string): VoiceEvent | IgnoredLine {
     return { ignored: "not JSON" };
   }
   if (parsed == null || typeof parsed !== "object" || Array.isArray(parsed)) return { ignored: "not a JSON object" };
-  const object = parsed as { type?: unknown; message?: unknown; text?: unknown; id?: unknown; brief?: unknown; item_id?: unknown };
+  const object = parsed as { type?: unknown; message?: unknown; text?: unknown; id?: unknown; brief?: unknown; item_id?: unknown; request?: unknown; effort?: unknown };
   if (object.type === "ready") return { tag: "ready" };
   if (object.type === "request_error") return { tag: "requestError", message:
     typeof object.message === "string" && object.message ? object.message : "Reply failed" };
@@ -230,11 +274,17 @@ export function decodeLine(raw: string): VoiceEvent | IgnoredLine {
     return { tag: "spokenDelta", text, itemId: typeof object.item_id === "string" ? object.item_id : "" };
   }
   if (object.type === "stop_work") return { tag: "stopWork" };
+  if (object.type === "status") {
+    const id = typeof object.id === "string" ? object.id.trim() : "";
+    const request = typeof object.request === "string" ? object.request : "";
+    return { tag: "statusRequest", id: id as WorkId | "", request };
+  }
   if (object.type === "work") {
     const id = typeof object.id === "string" ? object.id.trim() : "";
     const brief = typeof object.brief === "string" ? object.brief.trim() : "";
     if (!id || !brief) return { ignored: "work: missing id or brief" };
-    return { tag: "work", id: id as WorkId, brief: brief as UserText };
+    // An older Voice build sends no effort; the fast default is the safe read.
+    return { tag: "work", id: id as WorkId, brief: brief as UserText, effort: asEffort(object.effort) };
   }
   return { ignored: `unknown type ${typeof object.type === "string" ? object.type : "(none)"}` };
 }

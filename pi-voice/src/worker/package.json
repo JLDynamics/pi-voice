@@ -1,0 +1,12 @@
+{
+  "name": "pi-voice-worker",
+  "private": true,
+  "type": "module",
+  "description": "Durable multi-job worker host for pi-voice (pi-durable).",
+  "dependencies": {
+    "@earendil-works/pi-durable": "1.2.0",
+    "@earendil-works/pi-ai": "^1.2.0",
+    "@earendil-works/chord": "^1.2.0",
+    "typebox": "1.3.27"
+  }
+}

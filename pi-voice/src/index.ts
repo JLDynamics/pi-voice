@@ -1,11 +1,15 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { AGENT_LABEL, Voice, detectMuteChord } from "./voice.ts";
-import { jobIdFromText, toolProgress } from "./work.ts";
+import { jobIdFromText, toolProgress, toolSummary } from "./work.ts";
 
 export default function (pi: ExtensionAPI): void {
   const voice = Voice.attach(pi);
   let announcedAnswer = false;
   const partialTools = new Set<string>();
+  /** Tools running right now, by toolCallId, so a status line can count them. */
+  const activeTools = new Map<string, string>();
+  /** Per-call arguments, kept only long enough to build a one-line summary. */
+  const toolArgs = new Map<string, unknown>();
 
   pi.registerCommand("voice", {
     description: `Talk in this session. ${AGENT_LABEL} hears and speaks. Second /voice stops.`,
@@ -46,16 +50,42 @@ export default function (pi: ExtensionAPI): void {
   pi.on("agent_settled", (_event, ctx) => voice.feed({ tag: "agentSettled" }, ctx));
   pi.on("tool_execution_start", (event, ctx) => {
     partialTools.delete(event.toolCallId);
-    voice.feed({ tag: "jobProgress", note: toolProgress("start", event.toolName) }, ctx);
+    activeTools.set(event.toolCallId, event.toolName);
+    toolArgs.set(event.toolCallId, event.args);
+    voice.feed({
+      tag: "jobProgress",
+      note: toolProgress("start", event.toolName),
+      tool: event.toolName,
+      phase: "start",
+      summary: toolSummary(event.toolName, event.args),
+      active: [...activeTools.values()],
+    }, ctx);
   });
   pi.on("tool_execution_update", (event, ctx) => {
     if (partialTools.has(event.toolCallId)) return;
     partialTools.add(event.toolCallId);
-    voice.feed({ tag: "jobProgress", note: toolProgress("update", event.toolName) }, ctx);
+    voice.feed({
+      tag: "jobProgress",
+      note: toolProgress("update", event.toolName),
+      tool: event.toolName,
+      phase: "update",
+      summary: toolSummary(event.toolName, toolArgs.get(event.toolCallId)),
+      active: [...activeTools.values()],
+    }, ctx);
   });
   pi.on("tool_execution_end", (event, ctx) => {
     partialTools.delete(event.toolCallId);
-    voice.feed({ tag: "jobProgress", note: toolProgress(event.isError ? "error" : "end", event.toolName) }, ctx);
+    activeTools.delete(event.toolCallId);
+    const args = toolArgs.get(event.toolCallId);
+    toolArgs.delete(event.toolCallId);
+    voice.feed({
+      tag: "jobProgress",
+      note: toolProgress(event.isError ? "error" : "end", event.toolName),
+      tool: event.toolName,
+      phase: event.isError ? "error" : "end",
+      summary: toolSummary(event.toolName, args),
+      active: [...activeTools.values()],
+    }, ctx);
   });
   pi.on("message_update", (event, ctx) => {
     if (event.message.role !== "assistant" || !Array.isArray(event.message.content)) return;

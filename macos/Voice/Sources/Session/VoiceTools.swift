@@ -81,16 +81,18 @@ public final class VoiceToolExecutor: @unchecked Sendable {
     }
 }
 
-/// The two tools headless Voice publishes in Pi mode (`VOICE_THINKER=luna`).
+/// The three tools headless Voice publishes in Pi mode (`VOICE_THINKER=luna`).
 /// Names and the `brief` argument are part of the cross-language contract in
 /// `contracts/pi-voice.json`; the Python prompt names them too. Lives here, not
 /// in the LiveVoiceBackend files, so `test.sh` compiles and checks it.
 enum HeadlessTools {
     static let spawnThinking = "spawn_thinking"
+    static let checkThinking = "check_thinking"
     static let stopThinking = "stop_thinking"
     static let briefArgument = "brief"
+    static let effortArgument = "effort"
 
-    static var definitions: [[String: Any]] { [spawnThinkingTool, stopThinkingTool] }
+    static var definitions: [[String: Any]] { [spawnThinkingTool, checkThinkingTool, stopThinkingTool] }
 
     static let spawnThinkingTool: [String: Any] = [
         "type": "function",
@@ -102,6 +104,11 @@ enum HeadlessTools {
                 briefArgument: [
                     "type": "string",
                     "description": "What Pi should do or change in the current task.",
+                ],
+                effortArgument: [
+                    "type": "string",
+                    "enum": PiJobTracker.efforts,
+                    "description": "How hard Pi should think on this task. Omit for off: fastest, right for listing files, reading a page, or a quick lookup. Use low or medium for a change that needs care. Use high only when the user asks you to think hard or the task is genuinely hard (design, a bug you cannot see, a risky refactor). It costs a few seconds before the first word.",
                 ],
             ],
             "required": [briefArgument],
@@ -121,12 +128,66 @@ enum HeadlessTools {
         ] as [String: Any],
     ]
 
+    /// Read-only status read. This is the coordination verb the voice model was
+    /// missing: it can answer "how is it going" or "what did it find so far"
+    /// without steering, aborting, or inventing progress.
+    static let checkThinkingTool: [String: Any] = [
+        "type": "function",
+        "name": checkThinking,
+        "description": "Look up what Pi is doing right now, or what it already finished, without changing anything. Use it when the user asks how it is going, whether it is done, or what it has found so far, and when you need the latest findings before answering a follow-up. It returns the phase, what Pi is doing, how long it has run, and the start of Pi's answer so far. It never starts, steers, or stops work. Do not call it in a loop; call it once when the user asks.",
+        "parameters": [
+            "type": "object",
+            "properties": [
+                "job_id": [
+                    "type": "string",
+                    "description": "Optional job id from an earlier handoff. Omit for the current or last job.",
+                ],
+                "question": [
+                    "type": "string",
+                    "description": "What the user asked, in a few words. Used to frame the answer.",
+                ],
+            ] as [String: Any],
+        ] as [String: Any],
+    ]
+
+    /// Whether this call runs on the durable worker host, which runs N jobs at
+    /// once. On by default; `VOICE_WORKERS=single` (or `steer`/`pi`/`off`) falls
+    /// back to single-session steering. Read from the environment the extension
+    /// spawns Voice with, matching `durableWorkers()` in `pi-voice/src/worker.ts`.
+    static var parallelWorkers: Bool {
+        let mode = (ProcessInfo.processInfo.environment["VOICE_WORKERS"] ?? "").trimmingCharacters(in: .whitespaces).lowercased()
+        if mode.isEmpty { return true }
+        return !["single", "steer", "pi", "off"].contains(mode)
+    }
+
     /// The trimmed `brief` of a `spawn_thinking` call, or "" when missing.
     static func spawnBrief(_ argsJson: String) -> String {
+        stringArg(briefArgument, argsJson)
+    }
+
+    /// The requested thinking effort, or "off" when the model omitted it.
+    /// Unknown values fall back to "off" rather than being passed through, so a
+    /// hallucinated level can never widen what Pi does.
+    static func spawnEffort(_ argsJson: String) -> String {
+        let raw = stringArg(effortArgument, argsJson).lowercased()
+        return PiJobTracker.efforts.contains(raw) ? raw : PiJobTracker.defaultEffort
+    }
+
+    /// `check_thinking` arguments are all optional; the model may send none.
+    static func checkJobId(_ argsJson: String) -> String? {
+        let id = stringArg("job_id", argsJson)
+        return id.isEmpty ? nil : id
+    }
+
+    static func checkRequest(_ argsJson: String) -> String {
+        stringArg("question", argsJson)
+    }
+
+    private static func stringArg(_ key: String, _ argsJson: String) -> String {
         guard let data = argsJson.data(using: .utf8),
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let brief = object[briefArgument] as? String
+              let value = object[key] as? String
         else { return "" }
-        return brief.trimmingCharacters(in: .whitespacesAndNewlines)
+        return value.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }

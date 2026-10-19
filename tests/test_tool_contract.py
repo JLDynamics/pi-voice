@@ -79,12 +79,16 @@ def test_client_dispatch_covers_the_client_tools_and_nothing_else():
 
 
 def test_headless_voice_publishes_only_the_handoff():
-    """Pi voice is one handoff plus a spoken cancel. The old poll tools are gone."""
+    """Pi voice is one handoff, one read-only status read, and a spoken cancel.
+
+    The old poll tools (``ask_pi``/``pi_status``/``pi_results``) are still gone;
+    ``check_thinking`` is the single status verb, and it must stay a read.
+    """
     source = _live_backend_source()
     block, names = _headless_tools()
     assert "return HeadlessTools.definitions" in source.split("func headlessTalkerTools()", 1)[1]
     published = {names[c] for c in re.findall(r'"name": (\w+)', block)}
-    assert published == {"spawn_thinking", "stop_thinking"}
+    assert published == {"spawn_thinking", "check_thinking", "stop_thinking"}
     dispatch = source.split("func executeTool(", 1)[1].split("func sendToolOutput(", 1)[0]
     assert {names[c] for c in re.findall(r"if name == HeadlessTools\.(\w+)", dispatch)} == published
     for retired in ("ask_pi", "stop_pi", "pi_status", "pi_results"):
@@ -96,6 +100,20 @@ def test_headless_voice_publishes_only_the_handoff():
     assert "click, type, fill forms, navigate" in description
     assert "You cannot see the screen or click yourself" in description
     assert "screenshot" not in description
+
+
+def test_check_thinking_is_a_read_not_a_steer():
+    """A status question must never reach Pi as work: it reads, it never dispatches."""
+    # The dispatcher lives in the +Tools extension, not the class properties.
+    source = (SESSION_SOURCES / "LiveVoiceBackend+Tools.swift").read_text()
+    block, _names = _headless_tools()
+    handler = source.split("if name == HeadlessTools.checkThinking", 1)[1].split(
+        "if name == HeadlessTools.stopThinking", 1
+    )[0]
+    assert "requestPiStatus" in handler
+    for forbidden in ("onSpawnThinking", "onStopThinking", "piJobs.ask", "startPiProgressLoop"):
+        assert forbidden not in handler, f"check_thinking must not call {forbidden}"
+    assert "never starts, steers, or stops work" in block
 
 
 def test_mid_job_spawn_thinking_acks_a_steer():
@@ -112,7 +130,10 @@ def test_mid_job_spawn_thinking_acks_a_steer():
     dispatch = source.split("func executeTool(", 1)[1].split("if name == HeadlessTools.stopThinking", 1)[0]
     # Whether this call steers must be read before ask() makes the new id active.
     assert dispatch.index("let steering = piJobs.hasActive") < dispatch.index("piJobs.ask(")
-    assert "PiJobTracker.handoffAck(id: id, steering: steering)" in dispatch
+    assert "PiJobTracker.handoffAck(id: id, steering: steering, parallel: parallel)" in dispatch
+    # Parallel mode changes what a second brief means, and the ack is the only
+    # place the voice model learns it per call.
+    assert "HeadlessTools.parallelWorkers" in dispatch
     assert '"status": "queued"' not in dispatch
 
     tracker = (SESSION_SOURCES / "PiJobTracker.swift").read_text()
@@ -145,6 +166,6 @@ def test_spawn_thinking_is_not_for_confirmations_or_status():
     for case in ("confirms", "repeats", "says continue", "rewords the same task", "asks how it is going"):
         assert case in description, case
     dispatch = source.split("func executeTool(", 1)[1].split("func sendToolOutput(", 1)[0]
-    assert dispatch.index("piJobs.activeRepeat(of: brief)") < dispatch.index("onSpawnThinking?(id, brief)")
+    assert dispatch.index("piJobs.activeRepeat(of: brief)") < dispatch.index("onSpawnThinking?(id, brief, effort)")
     tracker = (SESSION_SOURCES / "PiJobTracker.swift").read_text()
     assert '"status": "already_working"' in tracker

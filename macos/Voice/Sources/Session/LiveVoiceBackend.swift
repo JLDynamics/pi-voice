@@ -18,8 +18,11 @@ final class LiveVoiceBackend: VoiceBackend, HeadlessBackend {
     var onToolDone: ((String, String) -> Void)?
     var onToolsCancelled: (() -> Void)?
     var onSpoken: ((String) -> Void)?
-    var onSpawnThinking: ((String, String) -> Void)?
+    var onSpawnThinking: ((String, String, String) -> Void)?
     var onStopThinking: (() -> Void)?
+    /// A `check_thinking` call: (job id or "", what the user asked). The
+    /// extension answers from Pi's live session state; nothing is steered.
+    var onStatusRequest: ((String, String) -> Void)?
 
     enum Connection {
         case idle
@@ -75,6 +78,16 @@ final class LiveVoiceBackend: VoiceBackend, HeadlessBackend {
     var piProgressTask: Task<Void, Never>?
     var lastPiProgressAt = Date.distantPast
     var lastPiProgressNote: String?
+    /// Bumped by every progress update and by the 8 s loop, so the loop never
+    /// re-injects a line the update path already sent.
+    var piProgressGeneration = 0
+    /// A `check_thinking` call waiting for the extension's `status` line.
+    var pendingStatusCallId: String?
+    /// Answer to the last `check_thinking`; the tool output is sent when the
+    /// `status` line lands, so the model gets real state instead of a guess.
+    var pendingStatusRequest: String?
+    /// Cancels the fallback that answers an unanswered `check_thinking`.
+    var statusTimeout: Task<Void, Never>?
     var userSpeechActive = false
     /// Last time the server confirmed a new response. Arms the tool
     /// follow-up watchdog: if no response starts within seconds of a tool

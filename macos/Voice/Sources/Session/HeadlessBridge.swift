@@ -5,11 +5,16 @@ import Foundation
 @MainActor
 protocol HeadlessBackend: AnyObject {
     var onSpoken: ((String) -> Void)? { get set }
-    var onSpawnThinking: ((String, String) -> Void)? { get set }
+    /// (job id, brief, thinking effort).
+    var onSpawnThinking: ((String, String, String) -> Void)? { get set }
     var onStopThinking: (() -> Void)? { get set }
+    var onStatusRequest: ((String, String) -> Void)? { get set }
     func ingestUserText(_ text: String)
     func postResult(id: String, speak: String, full: String)
     func updatePiJob(id: String, status: String, note: String?)
+    func updatePiProgress(id: String, tool: String, phase: String, summary: String, active: String)
+    /// The extension's answer to `check_thinking` (`snapshot` over stdio).
+    func resolvePiStatus(id: String, payloadJson: String)
 }
 
 /// NDJSON pipe between headless Voice and the Pi `/voice` loop.
@@ -77,11 +82,14 @@ final class HeadlessBridge {
             self.spokenItemId = nil
             self.emit(["type": "spoken", "text": text, "item_id": id])
         }
-        session.onSpawnThinking = { [weak self] id, brief in
-            self?.emit(["type": "work", "id": id, "brief": brief])
+        session.onSpawnThinking = { [weak self] id, brief, effort in
+            self?.emit(["type": "work", "id": id, "brief": brief, "effort": effort])
         }
         session.onStopThinking = { [weak self] in
             self?.emit(["type": "stop_work"])
+        }
+        session.onStatusRequest = { [weak self] id, request in
+            self?.emit(["type": "status", "id": id, "request": request])
         }
 
         if listenToStdin {
@@ -147,6 +155,10 @@ final class HeadlessBridge {
             session?.postResult(id: id, speak: speak, full: full)
         case .jobUpdate(let id, let status, let note):
             session?.updatePiJob(id: id, status: status.rawValue, note: note)
+        case .progress(let id, let tool, let phase, let summary, let active):
+            session?.updatePiProgress(id: id, tool: tool, phase: phase.rawValue, summary: summary, active: active)
+        case .snapshot(let id, let payload):
+            session?.resolvePiStatus(id: id, payloadJson: payload)
         }
     }
 
@@ -183,6 +195,8 @@ enum HeadlessCommand: Equatable {
     case user(String)
     case result(id: String, speak: String, full: String)
     case jobUpdate(id: String, status: PiJobTracker.State, note: String?)
+    case progress(id: String, tool: String, phase: PiJobTracker.Phase, summary: String, active: String)
+    case snapshot(id: String, payload: String)
 
     struct Ignored: Error, Equatable { let reason: String }
 
@@ -220,6 +234,27 @@ enum HeadlessCommand: Equatable {
                         return .failure(Ignored(reason: "job_update: unknown status \(raw)"))
                     }
                     return .success(.jobUpdate(id: id, status: status, note: object["note"] as? String))
+                }
+            }
+        case "progress":
+            return string("id").flatMap { id in
+                string("tool").flatMap { tool in
+                    string("phase").flatMap { raw in
+                        guard !id.isEmpty, let phase = PiJobTracker.Phase(rawValue: raw) else {
+                            return .failure(Ignored(reason: "progress: unknown phase \(raw)"))
+                        }
+                        return .success(.progress(
+                            id: id, tool: tool, phase: phase,
+                            summary: object["summary"] as? String ?? "",
+                            active: object["active"] as? String ?? ""
+                        ))
+                    }
+                }
+            }
+        case "snapshot":
+            return string("id").flatMap { id in
+                string("payload").map { payload in
+                    .snapshot(id: id, payload: payload)
                 }
             }
         default:

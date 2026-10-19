@@ -6,11 +6,15 @@
   "description": "Talk in this Pi session. Agent hears and speaks.",
   "scripts": {
     "typecheck": "tsc -p tsconfig.json",
-    "test": "node --test 'src/*.test.ts'"
+    "test": "node --test 'src/*.test.ts' 'src/worker/*.test.ts'"
   },
-  "keywords": ["pi-package"],
+  "keywords": [
+    "pi-package"
+  ],
   "pi": {
-    "extensions": ["./src/index.ts"]
+    "extensions": [
+      "./src/index.ts"
+    ]
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "^1.1.0",

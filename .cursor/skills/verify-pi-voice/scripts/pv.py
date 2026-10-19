@@ -621,6 +621,62 @@ def drive_handoff_voice(run: Path, st: dict[str, Any], proof: Proof) -> None:
         voice.quit()
 
 
+def drive_check_voice(run: Path, st: dict[str, Any], proof: Proof) -> None:
+    """The Voice.app half of `check_thinking`: the harness plays the extension.
+
+    Voice must emit a `status` line for the tool call, accept the `snapshot`
+    answer, hand it to the model as the tool output, and have Agent speak the
+    findings from it — with no second `work` line (a read must not steer).
+    """
+    voice = Voice(run, st, proof, [], "check")
+    try:
+        if not voice.start(muted=False):
+            return
+        t, work = voice.say("Please have Pi list the files in the current project folder.", ("work",), 45)
+        if not proof.check("handoff emits work", work and work.get("type") == "work", work):
+            return
+        time.sleep(2)
+        voice.send({"type": "job_update", "id": work["id"], "status": "working"})
+        # The model only reads status when the user asks for it.
+        t_ask = voice.send({"type": "user", "text": "How is Pi getting on? What has it found so far?"})
+        k = voice.wait(lambda e: e.get("type") == "status", 90, t_ask)
+        if not proof.check("check_thinking reaches the extension as a status line", k, k):
+            return
+        proof.check(
+            "the status request carries the question",
+            bool((k.get("request") or "").strip()),
+            k.get("request"),
+        )
+        payload = json.dumps(
+            {
+                "request": k.get("request") or "",
+                "status": "working",
+                "id": work["id"],
+                "brief": work.get("brief"),
+                "elapsed_s": 12,
+                "doing": "Pi is reading files",
+                "running": ["read"],
+                "answer": "So far it found main.py, notes.txt, and README.md.",
+                "answer_chars": 46,
+                "note": "This is Pi's answer so far and the task may still be running.",
+            }
+        )
+        t2 = voice.send({"type": "snapshot", "id": work["id"], "payload": payload})
+        spoken = voice.wait(lambda e: e.get("type") == "spoken", 60, t2)
+        proof.check(
+            "the snapshot's findings are spoken back",
+            mentions(spoken, r"main|notes|readme|three|\b3\b"),
+            spoken,
+        )
+        proof.check(
+            "a status read does not emit a second work line",
+            not voice.after(t, "work")[1:],
+            [w.get("id") for w in voice.after(t, "work")],
+        )
+    finally:
+        voice.quit()
+
+
 def drive_steer(run: Path, st: dict[str, Any], proof: Proof) -> None:
     voice = Voice(run, st, proof, [], "steer")
     try:
@@ -818,6 +874,14 @@ class PiTerminal:
             VOICE_BIN=st["wrapper"],
             TERM="xterm-256color",
             PV_HISTORY_DUMP=str(proof.dir),
+            # Parallel workers are the default; a drive that asserts the job
+            # reaching Pi's own session must ask for that path explicitly.
+            # `PV_VIA=durable` opts a drive into the worker host instead.
+            **(
+                {}
+                if os.environ.get("PV_VIA") == "durable"
+                else {"VOICE_WORKERS": os.environ.get("PV_WORKERS", "single")}
+            ),
         )
         argv = [
             "pi",
@@ -834,6 +898,11 @@ class PiTerminal:
             "-e",
             str(EXTENSION),
         ]
+        # `PV_PI_MODEL` pins the model for one drive, so a limited default
+        # model can be worked around without editing the user's settings.
+        pin = os.environ.get("PV_PI_MODEL", "").strip()
+        if pin:
+            argv.extend(["--model", pin])
         proof.note("spawn", " ".join(argv))
         pid, fd = pty.fork()
         if pid == 0:
@@ -1046,6 +1115,92 @@ def drive_handoff_pi(run: Path, st: dict[str, Any], proof: Proof) -> None:
         pi.close()
 
 
+def drive_check_pi(run: Path, st: dict[str, Any], proof: Proof) -> None:
+    """`check_thinking` end to end: a status question while Pi is mid-job must
+    answer from Pi's live session without steering it.
+
+    Proof is threefold: the `status` line reaches the extension, the extension's
+    `snapshot` answer is logged with the live phase, and Pi's job message count
+    does not grow (a status question is a read, not a second handoff).
+    """
+    pi = PiTerminal(run, st, proof)
+    try:
+        pi.pump(6)
+        if not pi.start_voice("call"):
+            return
+        k = pi.last_row()
+        pi.type_line("Hi, reply with just the single word hello.")
+        proof.check("Agent answers a greeting", pi.wait_for(lambda: pi.spoken_after(k), 45), pi.spoken_after(k))
+
+        n, k = len(pi.entries()), pi.last_row()
+        pi.type_line("Please have Pi list every file in this folder, then read the README and summarize it.")
+        job = pi.wait_for(
+            lambda: next(
+                (
+                    e
+                    for e in pi.entries()[n:]
+                    if e.get("type") == "message"
+                    and (e.get("message") or {}).get("role") == "user"
+                    and "[Pi voice job id:" in pi.text_of(e)
+                ),
+                None,
+            ),
+            60,
+        )
+        if not proof.check("a handoff reached Pi", job, pi.text_of(job)[-200:] if job else None):
+            return
+        jobs_before = len(
+            [
+                e
+                for e in pi.entries()
+                if e.get("type") == "message"
+                and (e.get("message") or {}).get("role") == "user"
+                and "[Pi voice job id:" in pi.text_of(e)
+            ]
+        )
+        # Ask for status while Pi is still working.
+        time.sleep(4)
+        k2 = pi.last_row()
+        pi.type_line("How is Pi getting on? What has it found so far?")
+        spoken = pi.wait_for(lambda: next((d for d in pi.spoken_after(k2) if d["text"].strip()), None), 90)
+        proof.check("a status question is answered aloud", spoken, spoken["text"] if spoken else None)
+        if spoken:
+            proof.check(
+                "the status answer is about the job, not a fresh handoff",
+                not re.search(r"\b(queue|queued|after that|next task)\b", spoken["text"], re.I),
+                spoken["text"],
+            )
+        jobs_after = len(
+            [
+                e
+                for e in pi.entries()
+                if e.get("type") == "message"
+                and (e.get("message") or {}).get("role") == "user"
+                and "[Pi voice job id:" in pi.text_of(e)
+            ]
+        )
+        proof.check(
+            "check_thinking did not steer Pi (no second job message)",
+            jobs_after == jobs_before,
+            f"jobs before={jobs_before} after={jobs_after}",
+        )
+        stderr = "\n".join(p.read_text(errors="replace") for p in (run / "scratch/tmp").glob("pi-voice.*.stderr.log"))
+        proof.check(
+            "the extension answered a snapshot from the live job",
+            "snapshot (current)" in stderr or " snapshot " in stderr,
+            [ln for ln in stderr.splitlines() if "snapshot" in ln][-3:],
+        )
+        final = pi.wait_for(
+            lambda: next((d for d in pi.spoken_after(k) if re.search(r"readme|main|notes", d["text"], re.I)), None),
+            240,
+        )
+        proof.check("the original job still finishes and is spoken", final, final["text"] if final else None)
+        pi.stop_voice("call")
+    finally:
+        pi.save()
+        pi.close()
+
+
 def drive_memory_pi(run: Path, st: dict[str, Any], proof: Proof) -> None:
     pi = PiTerminal(run, st, proof)
     try:
@@ -1097,7 +1252,9 @@ DRIVES: dict[tuple[str, str], Callable[[Path, dict[str, Any], Proof], None]] = {
     ("conversation", "backend"): drive_conversation_backend,
     ("memory", "backend"): drive_memory_backend,
     ("handoff", "voice"): drive_handoff_voice,
+    ("check", "voice"): drive_check_voice,
     ("handoff", "pi"): drive_handoff_pi,
+    ("check", "pi"): drive_check_pi,
     ("steer", "voice"): drive_steer,
     ("stop", "voice"): drive_stop,
     ("memory", "voice"): drive_memory_voice,

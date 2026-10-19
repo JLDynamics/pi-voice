@@ -48,11 +48,17 @@ def test_voice_prompt_tells_the_model_the_date_and_when_to_search():
 
 def test_voice_prompt_is_compact():
     # The guard exists to catch unnoticed drift. The Pi handoff block is only
-    # on sessions that publish spawn_thinking; trim it before raising the cap.
+    # on sessions that publish the handoff tools; trim it before raising the
+    # cap. It grew once for check_thinking (a read-only status verb) and the
+    # rules that make Luna use it instead of guessing or re-steering, and again
+    # for the per-job thinking effort (one line; the tool description carries
+    # the detail) and once for parallel workers (one clause on the steer rule).
     bash = build_voice_system_prompt(PERSONA, now=NOW)
-    via_pi = build_voice_system_prompt(PERSONA, now=NOW, tool_names=["spawn_thinking", "stop_thinking"])
+    via_pi = build_voice_system_prompt(
+        PERSONA, now=NOW, tool_names=["spawn_thinking", "check_thinking", "stop_thinking"]
+    )
     assert len(bash) < 5500, f"voice prompt grew to {len(bash)} chars; every turn pays for it"
-    assert len(via_pi) < 5500, f"Pi voice prompt grew to {len(via_pi)} chars; every turn pays for it"
+    assert len(via_pi) < 6100, f"Pi voice prompt grew to {len(via_pi)} chars; every turn pays for it"
 
 
 def test_personality_is_opening_and_rules_follow():
@@ -143,7 +149,7 @@ def test_research_section_follows_the_published_tools():
     assert "Pi owns permissions and approvals" in via_pi
     assert "missing save destination" in via_pi
     assert "not a new research question" in via_pi
-    assert "the latest brief wins" in via_pi
+    assert "each brief is its own job" in via_pi
     assert "ask_pi" not in via_pi
     assert "pi_status" not in via_pi
     assert "pi_results" not in via_pi
@@ -175,7 +181,10 @@ def test_mid_job_handoff_is_a_steer_not_a_queue():
     first finding was never reported."""
     prompt = build_voice_system_prompt(PERSONA, now=NOW, tool_names=["spawn_thinking", "stop_thinking"])
     handoff = prompt[prompt.index("## Working with Pi") :]
-    assert "That steers Pi: the latest brief wins and replaces the current task." in handoff
+    # Parallel workers are the default now, so the steer wording is the
+    # exception: the tool result says which one happened.
+    assert "Normally each brief is its own job" in handoff
+    assert "Only when the tool result says you steered it" in handoff
     assert "Okay, I've redirected Pi to that instead." in handoff
     assert "say the first is being replaced and they can ask again after" in handoff
     ban = "Never say it is queued or runs after that or next;"
@@ -203,8 +212,28 @@ def test_confirm_continue_and_status_do_not_respawn_pi():
         "If they only confirm, repeat, say continue, or reword the same task, do not call spawn_thinking; "
         "Pi is already on it." in handoff
     )
-    assert "Asked how it's going, answer from the latest [STATUS] or say Pi is still working; no spawn_thinking." in (
-        handoff
+    assert (
+        "Asked how it's going, what it found, or whether it is done, call check_thinking once and answer from what "
+        "it returns." in handoff
     )
+    # The status read is the only thing allowed to answer "how's it going";
+    # steering Pi to answer a progress question is what broke live runs.
+    assert "Do not call spawn_thinking for a status question." in handoff
+    assert "Use it only for an explicit cancel, never for a status question." in handoff
     # The old rule sent every correction, however small, back to Pi.
     assert "A correction or new request while Pi works calls spawn_thinking again." not in prompt
+
+
+def test_effort_is_an_optional_hint_not_a_second_dispatch_rule():
+    """The model may pick how hard Pi thinks, but must not spend high effort on
+    errands — and asking for it must not read like a new handoff."""
+    prompt = build_voice_system_prompt(
+        PERSONA, now=NOW, tool_names=["spawn_thinking", "check_thinking", "stop_thinking"]
+    )
+    handoff = prompt[prompt.index("## Working with Pi") :]
+    assert "optional effort" in handoff
+    assert "omit it for lookups" in handoff
+    assert "high only when the user asks you to think hard" in handoff
+    assert "costs a few seconds before the first word" in handoff
+    # A bash session has no handoff, so it must not learn about effort at all.
+    assert "effort" not in build_voice_system_prompt(PERSONA, now=NOW)

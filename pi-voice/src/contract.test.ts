@@ -7,9 +7,11 @@ import {
   headlessChildEnv,
   JOB_UPDATE_STATUSES,
   parseLine,
+  PROGRESS_PHASES,
   toVoice,
   type HeadlessIn,
   type JobUpdateStatus,
+  type ProgressPhase,
   type VoiceHistoryTurn,
 } from "./child.ts";
 
@@ -78,6 +80,10 @@ describe("contracts/pi-voice.json conformance (TypeScript)", () => {
     assert.deepEqual([...JOB_UPDATE_STATUSES], contract.enums.jobStatus);
   });
 
+  it("PROGRESS_PHASES equals enums.progressPhase", () => {
+    assert.deepEqual([...PROGRESS_PHASES], contract.enums.progressPhase);
+  });
+
   it("headlessChildEnv writes voiceHistory.env as a JSON array with exactly the turn keys", () => {
     const turnSchema = contract.voiceHistory.turn;
     const turnSamples = generateSamples(turnSchema, contract.enums) as VoiceHistoryTurn[];
@@ -120,8 +126,9 @@ describe("contracts/pi-voice.json conformance (TypeScript)", () => {
       heard: { tag: "heard", fields: { text: "text", item_id: "itemId" } },
       spoken_delta: { tag: "spokenDelta", fields: { text: "text", item_id: "itemId" } },
       spoken: { tag: "spoken", fields: { text: "text", item_id: "itemId" } },
-      work: { tag: "work", fields: { id: "id", brief: "brief" } },
+      work: { tag: "work", fields: { id: "id", brief: "brief", effort: "effort" } },
       stop_work: { tag: "stopWork", fields: {} },
+      status: { tag: "statusRequest", fields: { id: "id", request: "request" } },
     };
 
     it("every contract fromVoice type has an entry in the mapping table", () => {
@@ -199,6 +206,21 @@ describe("contracts/pi-voice.json conformance (TypeScript)", () => {
           s.note !== undefined
             ? toVoice.jobUpdate(s.id as string, s.status as JobUpdateStatus, s.note as string)
             : toVoice.jobUpdate(s.id as string, s.status as JobUpdateStatus),
+      },
+      progress: {
+        builderName: "progress",
+        build: (s) =>
+          toVoice.progress(
+            s.id as string,
+            s.tool as string,
+            s.phase as ProgressPhase,
+            s.summary as string,
+            s.active as string,
+          ),
+      },
+      snapshot: {
+        builderName: "snapshot",
+        build: (s) => toVoice.snapshot(s.id as string, s.payload as string),
       },
     };
 

@@ -37,6 +37,27 @@ export function stepLifecycle(state: VoiceState, event: VoiceEvent, world: StepW
     return fail(state, message);
   }
 
+  // The durable host reports ready while the child is still connecting (it is
+  // started at spawn time), so it must be accepted in both states or the first
+  // job would be dispatched down the single-session path.
+  if (event.tag === "workerReady") {
+    if (state.tag === "off") return keep(state);
+    const next: VoiceState = { ...state, worker: { model: event.model } };
+    return keep(next, [{ tag: "paint", strip: state.tag === "on" ? strip(next, world.now) : null }]);
+  }
+
+  // The durable host failed. Say so once and fall back: a voice call without a
+  // job runner is far worse than one that steers a single session.
+  if (event.tag === "workerError") {
+    if (state.tag === "off") return keep(state);
+    const { worker: _dropped, ...rest } = state as typeof state & { worker?: unknown };
+    const next = rest as VoiceState;
+    return keep(next, [
+      { tag: "notify", message: `Parallel workers unavailable (${event.message}); using the single Pi session.`, kind: "warning" },
+      { tag: "paint", strip: state.tag === "on" ? strip(next, world.now) : null },
+    ]);
+  }
+
   if (event.tag === "ready") {
     if (state.tag !== "connecting" || world.pid == null) return keep(state);
     const live: VoiceState = {
@@ -50,6 +71,7 @@ export function stepLifecycle(state: VoiceState, event: VoiceEvent, world: StepW
       lastHeard: null,
       heardPending: null,
       heardItemId: null,
+      ...(state.worker ? { worker: state.worker } : {}),
     };
     return {
       state: live,

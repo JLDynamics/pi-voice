@@ -27,7 +27,32 @@ struct PiJobTracker {
         var startedAt: Date
         var updatedAt: Date
         var lastNote: String?
+        /// Thinking effort requested for this job (`enums.thinkingEffort`).
+        var effort: String
+        /// Structured activity for the live status line: the last tool Pi
+        /// touched and every tool still running. Codex renders its voice
+        /// status from items like this instead of a prose note, so "+2 more"
+        /// and the tool's own name survive without a model round trip.
+        var tool: String?
+        var phase: Phase?
+        var active: [String] = []
     }
+
+    enum Phase: String {
+        case start
+        case update
+        case end
+        case error
+    }
+
+    /// How hard Pi thinks on one job, the levels the voice model may pick.
+    /// Matches `enums.thinkingEffort` in `contracts/pi-voice.json`. Codex sends
+    /// the same choice per handoff as `backend_thinking_effort`; the difference
+    /// is that pi's only hook is the session-wide thinking level, so the
+    /// extension applies it at the start of the job and restores it after.
+    static let efforts = ["off", "minimal", "low", "medium", "high"]
+    /// The fast default. A voice caller is waiting, and most jobs are lookups.
+    static let defaultEffort = "off"
 
     struct StoredResult {
         var id: String
@@ -40,6 +65,9 @@ struct PiJobTracker {
     static let statusExcerpt = 140
     static let defaultPageLimit = 1500
     static let maxPageLimit = 4000
+    /// Characters of Pi's answer that `check_thinking` hands the voice model
+    /// while the job is still running. The whole answer is cached for `[FINAL]`.
+    static let snapshotHead = 900
     static let journalFileName = "pi-voice.jobs.jsonl"
 
     /// Whether a changed note is old enough to record as silent context.
@@ -53,6 +81,28 @@ struct PiJobTracker {
         let body = note.trimmingCharacters(in: .whitespacesAndNewlines)
         let status = body.isEmpty ? "Pi is still working" : body
         return "[STATUS] \(status). Background progress for context only; do not speak it. This is not the user."
+    }
+
+    /// Human label for one structured activity, the way Codex labels its
+    /// in-progress item ("Running command", "Editing 3 files").
+    static func activityLabel(tool: String, phase: Phase, activeCount: Int, summary: String) -> String {
+        let detail = summary.trimmingCharacters(in: .whitespacesAndNewlines)
+        let base: String
+        switch tool {
+        case "web_search", "source_check": base = "searching the web"
+        case "fetch_content", "get_search_content": base = "reading sources"
+        case "read", "grep", "find", "ls": base = "reading files"
+        case "edit", "write", "apply_patch": base = "editing files"
+        case "bash": base = "running a command"
+        default: base = "using a tool"
+        }
+        var label: String
+        if phase == .end { label = "finished \(base)" }
+        else if phase == .error { label = "\(base) failed" }
+        else { label = base }
+        if !detail.isEmpty { label += " (\(detail))" }
+        if activeCount > 1 { label += " + \(activeCount - 1) more" }
+        return "Pi is \(label)"
     }
 
     /// Failure is a status update of its own. `dropped` stays silent: mute
@@ -81,7 +131,16 @@ struct PiJobTracker {
     /// is active steers it (the extension marks the old id superseded), so the
     /// ack must not read like a second job lining up: Agent once told the user
     /// a new task was waiting behind the first when Pi had already dropped it.
-    static func handoffAck(id: String, steering: Bool) -> [String: Any] {
+    static func handoffAck(id: String, steering: Bool, parallel: Bool = false) -> [String: Any] {
+        // Parallel workers: a second brief is its own job running beside the
+        // first, so the ack must not say the earlier task was replaced — it was
+        // not. Codex has the same distinction between create_thread and steering.
+        if steering && parallel {
+            return [
+                "status": "started_alongside", "id": id,
+                "note": "Pi is now running this as a second job, alongside the one already working. Say you have started it too; do not say anything was replaced. Both answers will arrive separately.",
+            ]
+        }
         guard steering else {
             return [
                 "status": "started", "id": id,
@@ -157,13 +216,16 @@ struct PiJobTracker {
     /// owns that decision (it can drop the new work, e.g. while muted) and
     /// reports it back via `job_update`. Superseding here would strand a
     /// phantom job whenever the drop path runs.
-    mutating func ask(id: String, brief: String, now: Date = Date()) {
-        jobs[id] = Job(id: id, brief: brief, state: .queued, startedAt: now, updatedAt: now, lastNote: nil)
+    mutating func ask(id: String, brief: String, effort: String = PiJobTracker.defaultEffort, now: Date = Date()) {
+        let level = Self.efforts.contains(effort) ? effort : Self.defaultEffort
+        jobs[id] = Job(
+            id: id, brief: brief, state: .queued, startedAt: now, updatedAt: now,
+            lastNote: nil, effort: level
+        )
         order.append(id)
         if order.count > 64 { order.removeFirst(order.count - 64) }
         activeId = id
     }
-
     /// Fold an extension `job_update` into the mirror. Terminal states stick:
     /// a stale `working` arriving after a supersede must not resurrect the job.
     /// One exception: `superseded -> done`, sent when Pi had already finished
@@ -181,6 +243,71 @@ struct PiJobTracker {
             lastTerminal = job
             if activeId == id { activeId = nil }
         }
+    }
+
+    /// Fold one structured `progress` line: remember the last tool and keep the
+    /// set of tools still running, so the status line can count them.
+    mutating func progress(id: String, tool: String, phase: Phase, summary: String, active: String, now: Date = Date()) {
+        guard var job = jobs[id], !isTerminal(job.state) else { return }
+        let name = tool.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !name.isEmpty {
+            job.tool = name
+            job.phase = phase
+            job.lastNote = Self.activityLabel(
+                tool: name, phase: phase,
+                activeCount: max(1, active.split(separator: ",").count),
+                summary: summary
+            )
+        }
+        job.active = active.split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        job.updatedAt = now
+        jobs[id] = job
+    }
+
+    /// What `check_thinking` answers: progress plus whatever Pi has said so
+    /// far, without touching the job. Codex's voice model reads thread state;
+    /// this is the read-only half of that, kept to one bounded string.
+    func snapshotPayload(id: String?, request: String, now: Date = Date()) -> [String: Any] {
+        let asked = id?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let target = asked.isEmpty ? activeId : asked
+        var payload: [String: Any] = ["request": request]
+        if let target, let job = jobs[target] {
+            payload["id"] = job.id
+            payload["brief"] = Self.excerpt(job.brief, Self.statusExcerpt)
+            payload["status"] = isTerminal(job.state) ? "settled" : job.state.rawValue
+            payload["elapsed_s"] = max(0, Int(now.timeIntervalSince(job.startedAt)))
+            payload["outcome"] = job.state.rawValue
+            payload["effort"] = job.effort
+            if let note = job.lastNote, !note.isEmpty { payload["doing"] = note }
+            if !job.active.isEmpty { payload["running"] = job.active }
+            if let stored = results.last(where: { $0.id == job.id }) {
+                payload["answer"] = Self.excerpt(stored.text, Self.snapshotHead)
+                payload["answer_chars"] = stored.text.count
+            } else if let note = job.lastNote, !note.isEmpty {
+                payload["answer"] = note
+            }
+            if !isTerminal(job.state) {
+                payload["note"] = "Relay this as a short spoken update in your own words; it is not finished. Do not call stop_thinking for a status question."
+            }
+            return payload
+        }
+        if let last = lastTerminal {
+            payload["status"] = "settled"
+            payload["id"] = last.id
+            payload["outcome"] = last.state.rawValue
+            payload["brief"] = Self.excerpt(last.brief, Self.statusExcerpt)
+            payload["ago_s"] = max(0, Int(now.timeIntervalSince(last.updatedAt)))
+            if let stored = results.last(where: { $0.id == last.id }) {
+                payload["answer"] = Self.excerpt(stored.text, Self.snapshotHead)
+                payload["answer_chars"] = stored.text.count
+            }
+            return payload
+        }
+        payload["status"] = "idle"
+        payload["note"] = "Nothing has been handed to Pi in this call."
+        return payload
     }
 
     private func isTerminal(_ state: State) -> Bool {

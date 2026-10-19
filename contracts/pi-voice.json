@@ -1,40 +1,134 @@
 {
-  "_doc": "Cross-language seams between the Pi extension (pi-voice/src, TypeScript), headless Voice.app (macos/Voice, Swift) and the Python backend (src/chatbot). Read by a conformance test in each language; production code never loads it. Field types: string, boolean, or an enum name from `enums`; a trailing ? marks an optional field. A message lists every field its sender writes; a sender writing any other key is a contract violation. Design: docs/refactor/U5-contract.md.",
-  "version": 1,
+  "_doc": "Cross-language seams between the Pi extension (pi-voice/src, TypeScript), headless Voice.app (macos/Voice, Swift) and the Python backend (src/chatbot). Read by a conformance test in each language; production code never loads it. Field types: string, boolean, or an enum name from `enums`; a trailing ? marks an optional field. A message lists every field its sender writes; a sender writing any other key is a contract violation.",
+  "version": 2,
   "enums": {
-    "jobStatus": ["queued", "working", "done", "stopped", "superseded", "dropped", "failed"],
-    "historyRole": ["user", "assistant"]
+    "jobStatus": [
+      "queued",
+      "working",
+      "done",
+      "stopped",
+      "superseded",
+      "dropped",
+      "failed"
+    ],
+    "progressPhase": [
+      "start",
+      "update",
+      "end",
+      "error"
+    ],
+    "thinkingEffort": [
+      "off",
+      "minimal",
+      "low",
+      "medium",
+      "high"
+    ],
+    "historyRole": [
+      "user",
+      "assistant"
+    ],
+    "workerOp": [
+      "spawn",
+      "stop",
+      "status",
+      "list",
+      "quit"
+    ],
+    "workerEvent": [
+      "ready",
+      "progress",
+      "job",
+      "result",
+      "status",
+      "list",
+      "error"
+    ]
   },
   "stdio": {
     "_doc": "NDJSON over Voice's stdin (toVoice) and stdout (fromVoice), one object per line, `type` names the message.",
     "toVoice": {
-      "user": { "text": "string" },
-      "mute": { "muted": "boolean" },
+      "user": {
+        "text": "string"
+      },
+      "mute": {
+        "muted": "boolean"
+      },
       "interrupt": {},
-      "result": { "id": "string", "speak": "string", "full": "string" },
-      "job_update": { "id": "string", "status": "jobStatus", "note": "string?" },
+      "result": {
+        "id": "string",
+        "speak": "string",
+        "full": "string"
+      },
+      "job_update": {
+        "id": "string",
+        "status": "jobStatus",
+        "note": "string?"
+      },
+      "progress": {
+        "id": "string",
+        "tool": "string",
+        "phase": "progressPhase",
+        "summary": "string",
+        "active": "string"
+      },
+      "snapshot": {
+        "id": "string",
+        "payload": "string"
+      },
       "quit": {}
     },
     "fromVoice": {
       "ready": {},
-      "error": { "message": "string" },
-      "request_error": { "message": "string" },
+      "error": {
+        "message": "string"
+      },
+      "request_error": {
+        "message": "string"
+      },
       "speech_started": {},
-      "heard": { "text": "string", "item_id": "string" },
-      "spoken_delta": { "text": "string", "item_id": "string" },
-      "spoken": { "text": "string", "item_id": "string" },
-      "work": { "id": "string", "brief": "string" },
-      "stop_work": {}
+      "heard": {
+        "text": "string",
+        "item_id": "string"
+      },
+      "spoken_delta": {
+        "text": "string",
+        "item_id": "string"
+      },
+      "spoken": {
+        "text": "string",
+        "item_id": "string"
+      },
+      "work": {
+        "id": "string",
+        "brief": "string",
+        "effort": "thinkingEffort"
+      },
+      "stop_work": {},
+      "status": {
+        "id": "string",
+        "request": "string"
+      }
     }
   },
   "voiceHistory": {
     "_doc": "The startup pack: a JSON array of turns in this environment variable, set by the extension when it spawns Voice.",
     "env": "VOICE_HISTORY",
-    "turn": { "role": "historyRole", "text": "string" }
+    "turn": {
+      "role": "historyRole",
+      "text": "string"
+    }
   },
   "tools": {
-    "_doc": "Tools headless Voice publishes in session.update; the Python prompt gates its Pi section on spawn_thinking and names both. Values are argument fields.",
-    "spawn_thinking": { "brief": "string" },
+    "_doc": "Tools headless Voice publishes in session.update; the Python prompt gates its Pi section on spawn_thinking and names every one. Values are argument fields. check_thinking is read-only: it reports progress and findings without touching the job. spawn_thinking's optional `effort` picks how hard Pi thinks on that job (Codex's `backend_thinking_effort`); omitting it keeps the fast default, off.",
+    "spawn_thinking": {
+      "brief": "string",
+      "effort": "thinkingEffort?"
+    },
+    "check_thinking": {
+      "job_id": "string?",
+      "question": "string?"
+    },
     "stop_thinking": {}
   },
   "channels": {
@@ -42,5 +136,61 @@
     "status": "[STATUS]",
     "final": "[FINAL]",
     "legacyPi": "[PI]"
+  },
+  "worker": {
+    "_doc": "NDJSON between the extension and the pi-durable worker host (pi-voice/src/worker/host.mjs). This is the parallel path: one host process runs N jobs at once, each in its own conversation. `list` and `status` are the read-only coordination verbs; `spawn` on a live id steers it.",
+    "env": {
+      "host": "VOICE_WORKER_HOST",
+      "model": "VOICE_WORKER_MODEL",
+      "provider": "VOICE_WORKER_PROVIDER"
+    },
+    "in": {
+      "spawn": {
+        "id": "string",
+        "brief": "string",
+        "effort": "thinkingEffort"
+      },
+      "stop": {
+        "id": "string"
+      },
+      "status": {
+        "id": "string",
+        "request": "string"
+      },
+      "list": {},
+      "quit": {}
+    },
+    "out": {
+      "ready": {
+        "model": "string"
+      },
+      "progress": {
+        "id": "string",
+        "tool": "string",
+        "phase": "progressPhase",
+        "summary": "string",
+        "active": "string"
+      },
+      "job": {
+        "id": "string",
+        "status": "jobStatus",
+        "note": "string?"
+      },
+      "result": {
+        "id": "string",
+        "speak": "string",
+        "full": "string"
+      },
+      "status": {
+        "id": "string",
+        "payload": "string"
+      },
+      "list": {
+        "jobs": "string"
+      },
+      "error": {
+        "message": "string"
+      }
+    }
   }
 }

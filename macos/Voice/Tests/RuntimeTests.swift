@@ -393,11 +393,12 @@ struct RuntimeTests {
 
         // Wire contract (out): work
         emitted.removeAll()
-        backend.onSpawnThinking?("call-1", "check system status")
+        backend.onSpawnThinking?("call-1", "check system status", "medium")
         check(emitted.count == 1, "work event emitted")
         check((emitted[0]["type"] as? String) == "work")
         check((emitted[0]["id"] as? String) == "call-1")
         check((emitted[0]["brief"] as? String) == "check system status")
+        check((emitted[0]["effort"] as? String) == "medium", "work carries the job's thinking effort")
 
         // Wire contract (in): mute
         check(!session.isMuted)
@@ -617,6 +618,21 @@ struct RuntimeTests {
                     let note = sample["note"] as? String
                     check(backend.piJobUpdates.contains { $0.id == id && $0.status == status && $0.note == note },
                           "backend must record job_update with id=\(id) status=\(status) note=\(String(describing: note))")
+                case "progress":
+                    let id = sample["id"] as? String ?? ""
+                    let tool = sample["tool"] as? String ?? ""
+                    let phase = sample["phase"] as? String ?? ""
+                    let summary = sample["summary"] as? String ?? ""
+                    let active = sample["active"] as? String ?? ""
+                    check(backend.piProgress.contains {
+                        $0.id == id && $0.tool == tool && $0.phase == phase
+                            && $0.summary == summary && $0.active == active
+                    }, "backend must record progress with id=\(id) tool=\(tool) phase=\(phase)")
+                case "snapshot":
+                    let id = sample["id"] as? String ?? ""
+                    let payload = sample["payload"] as? String ?? ""
+                    check(backend.resolvedStatus.contains { $0.id == id && $0.payload == payload },
+                          "backend must hand the extension's snapshot answer back to the tool call")
                 case "quit":
                     check(terminateCount > 0, "quit must call onTerminate")
                     check(stopServiceCount > 0, "quit must call onStopService")
@@ -652,8 +668,9 @@ struct RuntimeTests {
         emitBackend.onAgentDelta?("sample-delta-text")
         emitBackend.onSpoken?("sample-spoken-text")
         emitBackend.onAgentDone?()
-        emitBackend.onSpawnThinking?("sample-work-id", "sample-work-brief")
+        emitBackend.onSpawnThinking?("sample-work-id", "sample-work-brief", "medium")
         emitBackend.onStopThinking?()
+        emitBackend.onStatusRequest?("sample-work-id", "how is it going")
 
         var emittedTypes = Set<String>()
         for obj in emitted {
@@ -697,6 +714,19 @@ struct RuntimeTests {
             check(false, "Contract missing enums.jobStatus")
         }
 
+        // 3b. PiJobTracker.Phase raw values equal enums.progressPhase
+        if let phases = enums["progressPhase"] {
+            let allPhases: [PiJobTracker.Phase] = [.start, .update, .end, .error]
+            check(allPhases.count == phases.count,
+                  "PiJobTracker.Phase count (\(allPhases.count)) != contract progressPhase count (\(phases.count))")
+            for phase in allPhases {
+                check(phases.contains(phase.rawValue),
+                      "PiJobTracker.Phase case '\(phase.rawValue)' not in contract enums.progressPhase")
+            }
+        } else {
+            check(false, "Contract missing enums.progressPhase")
+        }
+
         // 4. VoiceHistoryEnv.variable equals voiceHistory.env and parse keeps sample built from voiceHistory.turn
         if let envVar = voiceHistory["env"] as? String,
            let turnSchema = voiceHistory["turn"] as? [String: String]
@@ -735,12 +765,24 @@ struct RuntimeTests {
                   "Tool '\(name)' argument keys mismatch: expected \(expectedArgKeys), got \(actualArgKeys)")
         }
 
-        let briefArg = tools["spawn_thinking"]?.keys.first ?? "brief"
+        // Sorted: dictionary key order is not stable, and spawn_thinking now
+        // carries more than one argument.
+        let spawnArgs = Set(tools["spawn_thinking"]?.keys.map { $0 } ?? [])
+        let briefArg = spawnArgs.contains("brief") ? "brief" : (spawnArgs.sorted().first ?? "brief")
         let sampleBrief = "contract-brief-test-val"
         let briefJsonData = try! JSONSerialization.data(withJSONObject: [briefArg: sampleBrief])
         let briefJson = String(data: briefJsonData, encoding: .utf8)!
         check(HeadlessTools.spawnBrief(briefJson) == sampleBrief,
               "HeadlessTools.spawnBrief must read contract brief argument '\(briefArg)'")
+        if spawnArgs.contains("effort"), let efforts = enums["thinkingEffort"] {
+            check(PiJobTracker.efforts == efforts,
+                  "PiJobTracker.efforts (\(PiJobTracker.efforts)) != contract thinkingEffort (\(efforts))")
+            let high = String(data: try! JSONSerialization.data(withJSONObject: ["effort": "high"]), encoding: .utf8)!
+            check(HeadlessTools.spawnEffort(high) == "high",
+                  "HeadlessTools.spawnEffort must read contract effort argument")
+            check(HeadlessTools.spawnEffort("{}") == PiJobTracker.defaultEffort,
+                  "an omitted effort keeps the fast default")
+        }
 
         // 6. PiJobTracker.statusChannel(note:) and finalChannel(excerpt:outcome:) start with channels.status and channels.final
         if let statusTag = channels["status"],
@@ -1054,6 +1096,17 @@ struct RuntimeTests {
         let fresh = PiJobTracker.handoffAck(id: "a1", steering: false)
         check((fresh["status"] as? String) == "started")
         check((fresh["id"] as? String) == "a1")
+        // Parallel workers: a second brief runs alongside, so the ack must not
+        // claim the earlier task was replaced.
+        let alongside = PiJobTracker.handoffAck(id: "a3", steering: true, parallel: true)
+        check((alongside["status"] as? String) == "started_alongside")
+        let alongsideNote = (alongside["note"] as? String) ?? ""
+        check(alongsideNote.contains("alongside"))
+        check(alongsideNote.contains("do not say anything was replaced"))
+        for banned in ["replaced the", "has been replaced", "cancelled"] {
+            check(!alongsideNote.lowercased().contains(banned), "parallel ack must not say \(banned)")
+        }
+        // The single-session ack is unchanged: there, the brief really does replace.
         let steer = PiJobTracker.handoffAck(id: "a2", steering: true)
         check((steer["status"] as? String) == "steering")
         check((steer["id"] as? String) == "a2")
@@ -1078,6 +1131,85 @@ struct RuntimeTests {
         check(repeats.activeRepeat(of: "Check the weather in Calgary", now: t0.addingTimeInterval(8)) == nil)
         check(repeats.activeRepeat(of: "Search the web for the latest AI news from today with sources", now: t0.addingTimeInterval(8)) == nil,
                "an added requirement still steers")
+
+        // Structured progress: the last tool, its phase and the running set,
+        // so the status line can name the tool and count the rest (Codex
+        // renders its voice status from items the same way).
+        var live = PiJobTracker()
+        live.ask(id: "p1", brief: "fix the failing test", now: t0)
+        live.progress(id: "p1", tool: "read", phase: .start, summary: "Sources/VoiceTools.swift", active: "read", now: t0.addingTimeInterval(2))
+        var pjob = live.jobs["p1"]
+        check(pjob?.tool == "read")
+        check(pjob?.phase == .start)
+        check(pjob?.active == ["read"])
+        check((pjob?.lastNote ?? "").contains("reading files"), "note names the activity: \(pjob?.lastNote ?? "") ")
+        check((pjob?.lastNote ?? "").contains("VoiceTools.swift"), "note keeps the short target")
+        live.progress(id: "p1", tool: "grep", phase: .start, summary: "FIXME", active: "read,grep", now: t0.addingTimeInterval(3))
+        pjob = live.jobs["p1"]
+        check(pjob?.active == ["read", "grep"], "two tools running are both tracked")
+        check((pjob?.lastNote ?? "").contains("+ 1 more"), "a second tool adds a count: \(pjob?.lastNote ?? "")")
+        live.progress(id: "p1", tool: "grep", phase: .error, summary: "FIXME", active: "read", now: t0.addingTimeInterval(4))
+        check((live.jobs["p1"]?.lastNote ?? "").contains("failed"))
+        // A terminal job ignores late progress: the status line must not go
+        // back to "reading files" after the answer arrived.
+        live.update(id: "p1", state: .done, note: nil, now: t0.addingTimeInterval(5))
+        live.progress(id: "p1", tool: "bash", phase: .start, summary: "ls", active: "bash", now: t0.addingTimeInterval(6))
+        check(live.jobs["p1"]?.tool == "grep", "progress after a terminal state is ignored")
+
+        // check_thinking's payload: phase, what Pi is doing, and the answer so
+        // far. Read-only — asking never changes the job.
+        var snap = PiJobTracker()
+        snap.ask(id: "s1", brief: "find the flaky test", now: t0)
+        snap.update(id: "s1", state: .working, note: nil, now: t0)
+        snap.progress(id: "s1", tool: "bash", phase: .start, summary: "npm test", active: "bash", now: t0)
+        snap.finish(id: "s1", text: "It is the retry helper.", now: t0)
+        let idleSnap = snap.snapshotPayload(id: nil, request: "how is it going", now: t0.addingTimeInterval(9))
+        check((idleSnap["status"] as? String) == "settled", "a finished job reads as settled")
+        check((idleSnap["id"] as? String) == "s1")
+        check((idleSnap["request"] as? String) == "how is it going")
+        check((idleSnap["answer"] as? String) == "It is the retry helper.")
+        check((idleSnap["outcome"] as? String) == "done")
+        let unknownSnap = snap.snapshotPayload(id: "nope", request: "q", now: t0)
+        check((unknownSnap["status"] as? String) == "settled", "an unknown id falls back to the last job, never invents one")
+        let empty = PiJobTracker()
+        let emptySnap = empty.snapshotPayload(id: nil, request: "q", now: t0)
+        check((emptySnap["status"] as? String) == "idle")
+        check((emptySnap["note"] as? String) == "Nothing has been handed to Pi in this call.")
+
+        // A running job's snapshot carries the running tools and a note that
+        // forbids stop_thinking for a status question.
+        var running = PiJobTracker()
+        running.ask(id: "r9", brief: "index the repo", now: t0)
+        running.update(id: "r9", state: .working, note: nil, now: t0)
+        running.progress(id: "r9", tool: "read", phase: .start, summary: "a.swift", active: "read,grep", now: t0)
+        let runSnap = running.snapshotPayload(id: "r9", request: "status", now: t0.addingTimeInterval(30))
+        check((runSnap["status"] as? String) == "working")
+        check((runSnap["elapsed_s"] as? Int) == 30)
+        check((runSnap["running"] as? [String]) == ["read", "grep"])
+        check(((runSnap["note"] as? String) ?? "").contains("Do not call stop_thinking"), "a running snapshot must not invite a cancel")
+        check((runSnap["outcome"] as? String) == "working")
+        check(running.hasActive, "a snapshot read must not settle the job")
+
+        // Thinking effort: the voice model may pick it per handoff, unknown
+        // values fall back to the fast default rather than widening what Pi does.
+        check(HeadlessTools.spawnEffort(#"{"brief":"x","effort":"high"}"#) == "high")
+        check(HeadlessTools.spawnEffort(#"{"brief":"x"}"#) == "off", "omitting effort keeps the fast default")
+        check(HeadlessTools.spawnEffort(#"{"brief":"x","effort":"banana"}"#) == "off", "an unknown effort is refused")
+        check(HeadlessTools.spawnEffort(#"{"brief":"x","effort":"HIGH"}"#) == "high", "case is normalised")
+        var effortJob = PiJobTracker()
+        effortJob.ask(id: "e1", brief: "refactor the auth flow", effort: "high", now: t0)
+        check(effortJob.jobs["e1"]?.effort == "high")
+        effortJob.update(id: "e1", state: .working, note: nil, now: t0)
+        let effortSnap = effortJob.snapshotPayload(id: nil, request: "status", now: t0.addingTimeInterval(5))
+        check((effortSnap["effort"] as? String) == "high", "a status read tells the model how hard Pi is thinking")
+        var badEffort = PiJobTracker()
+        badEffort.ask(id: "e2", brief: "x", effort: "banana", now: t0)
+        check(badEffort.jobs["e2"]?.effort == "off", "an unknown effort never reaches a job")
+
+        // Activity labels are Codex's, so the voice model hears the same words.
+        check(PiJobTracker.activityLabel(tool: "bash", phase: .start, activeCount: 1, summary: "npm test") == "Pi is running a command (npm test)")
+        check(PiJobTracker.activityLabel(tool: "edit", phase: .start, activeCount: 3, summary: "") == "Pi is editing files + 2 more")
+        check(PiJobTracker.activityLabel(tool: "web_search", phase: .end, activeCount: 1, summary: "swift 6") == "Pi is finished searching the web (swift 6)")
         check(repeats.activeRepeat(of: "Search the web for the latest AI news from today.", now: t0.addingTimeInterval(31)) == nil,
                "after the window a repeat is a deliberate redo")
         check(repeats.activeRepeat(of: "", now: t0.addingTimeInterval(1)) == nil)

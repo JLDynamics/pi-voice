@@ -22,7 +22,7 @@ def _load_contract() -> dict[str, Any]:
 
 def test_contract_json_is_well_formed() -> None:
     contract = _load_contract()
-    assert contract.get("version") == 1
+    assert contract.get("version") == 2
 
     enums = contract.get("enums")
     assert isinstance(enums, dict) and enums, "contract must have non-empty enums"

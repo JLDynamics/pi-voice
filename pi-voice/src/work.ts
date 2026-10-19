@@ -1,5 +1,6 @@
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 import type { Effect, Job, ShortResult, Step, StepWorld, UserText, VoiceState, WorkId } from "./voice.ts";
+import { DEFAULT_EFFORT, type ThinkingEffort } from "./child.ts";
 import { RESULT_MAX, strip } from "./voice.ts";
 import { handoffHistoryTurn, workHistoryTurn } from "./history.ts";
 
@@ -67,12 +68,23 @@ function withoutPrior(job: Extract<Job, { tag: "running" }>, effects: Effect[]):
   return effects.length > 0 ? { ...job, prior: null } : job;
 }
 
-export function openJob(state: VoiceState, id: WorkId, brief: UserText, world: StepWorld): Step {
+export function openJob(
+  state: VoiceState,
+  id: WorkId,
+  brief: UserText,
+  world: StepWorld,
+  effort: ThinkingEffort = DEFAULT_EFFORT,
+): Step {
   if (state.tag !== "on" || state.mic.tag !== "open") return keep(state);
   const effects: Effect[] = [];
-  // New routing id, same live Pi operation: steer without aborting its context.
-  // Explicit stop_thinking still owns cancellation.
-  if (state.job.tag === "running") {
+  // Single-session path: a new routing id for the same live Pi operation, so
+  // the old job is superseded (steered away) but its context survives. Explicit
+  // stop_thinking still owns cancellation.
+  //
+  // Durable path: every job is its own conversation, so a second brief is a
+  // second job running alongside the first. Nothing is superseded — that is the
+  // difference the parallel workers buy, and the reason this branch exists.
+  if (!state.worker && state.job.tag === "running") {
     effects.push({ tag: "sendJobUpdate", id: state.job.id, status: "superseded", note: "Task updated; Pi continues" });
   }
   const deliver = state.job.tag === "running" || !world.idle ? "steer" : "plain";
@@ -84,11 +96,22 @@ export function openJob(state: VoiceState, id: WorkId, brief: UserText, world: S
     bound: false,
     afterEntryId: world.leafId ?? null,
     lastNote: null,
+    effort,
     prior: state.job.tag === "running" ? { id: state.job.id, brief: state.job.brief } : null,
   };
   const next: VoiceState = { ...state, job };
   effects.push(
-    { tag: "sendWork", id, brief, deliver },
+    // Durable workers run N jobs at once, so a second brief is its own job
+    // rather than a steer. The single-session path keeps the steer.
+    state.worker
+      ? { tag: "workerSpawn", id, brief, effort }
+      : { tag: "sendWork", id, brief, deliver },
+    // A worker job leaves no trace in Pi's session, so the transcript would be
+    // silent while it runs. This custom entry makes it visible; Pi keeps custom
+    // entries out of model context, so the job does not enter Pi's conversation.
+    ...(state.worker
+      ? [{ tag: "upsertFace" as const, id: `work:${id}`, kind: "work" as const, text: brief, final: true }]
+      : []),
     { tag: "recordTurn", turn: handoffHistoryTurn(brief), turnKind: "work" },
     paint(next, world.now),
   );
@@ -271,6 +294,98 @@ export function toolProgress(phase: "start" | "update" | "end" | "error", name: 
   if (phase === "update") return `Pi is ${activity}; results are arriving`;
   if (phase === "error") return `Pi's ${step} failed; Pi is continuing`;
   return `Pi finished ${activity}; reviewing the result`;
+}
+
+/**
+ * A short, speakable name for a tool call's target: the query, the path, the
+ * command's first word. Codex shows the same thing next to its status line
+ * ("Searching the web for <query>"). Only the head is kept, and only what the
+ * user already knows about their own request — never a result.
+ */
+export function toolSummary(name: string, args: unknown): string {
+  if (!args || typeof args !== "object") return "";
+  const a = args as Record<string, unknown>;
+  const pick = (...keys: string[]): string => {
+    for (const key of keys) {
+      const value = a[key];
+      if (typeof value === "string" && value.trim()) return value.trim();
+    }
+    return "";
+  };
+  const tool = name.toLowerCase();
+  const raw = tool === "web_search" || tool === "source_check" ? pick("query", "q")
+    : tool === "fetch_content" ? pick("url")
+    : tool === "read" || tool === "write" || tool === "edit" ? pick("path", "file_path", "file")
+    : tool === "grep" || tool === "find" ? pick("pattern", "query", "glob")
+    : tool === "ls" ? pick("path")
+    : tool === "bash" ? pick("command")
+    : "";
+  const flat = raw.replace(/\s+/g, " ").trim();
+  if (!flat) return "";
+  return flat.length > 60 ? `${flat.slice(0, 59)}…` : flat;
+}
+
+/** What `check_thinking` answers: live state, never a guess and never a steer. */
+export type Snapshot = {
+  request: string;
+  status: "working" | "idle" | "settled";
+  id?: string;
+  brief?: string;
+  elapsed_s?: number;
+  doing?: string;
+  running?: readonly string[];
+  answer?: string;
+  answer_chars?: number;
+  outcome?: string;
+  ago_s?: number;
+  note?: string;
+};
+
+const SNAPSHOT_HEAD = 900;
+
+/**
+ * Build the answer to `check_thinking` from Pi's own session.
+ *
+ * This is the read-only coordination verb the voice model was missing: Codex's
+ * voice agent can `read_thread`/`wait_threads` a worker, while Luna could only
+ * wait for a throttled `[STATUS]` or a finished `[FINAL]`. Nothing here mutates
+ * the job; `request` is echoed so the model can match answer to question.
+ */
+export function snapshotFor(state: VoiceState, world: StepWorld, id: WorkId | "", request: string): Snapshot {
+  if (state.tag !== "on") return { request, status: "idle", note: "Voice is not on in this session." };
+  const wanted = id || (state.job.tag === "running" ? state.job.id : "");
+  const job = state.job.tag === "running" && (!wanted || state.job.id === wanted) ? state.job : null;
+  if (job) {
+    const answer = (answerForJob(world.branch, job.id) ?? "").trim();
+    const snap: Snapshot = {
+      request,
+      status: "working",
+      id: job.id,
+      brief: job.brief,
+      elapsed_s: Math.max(0, Math.floor((world.now - job.startedAt) / 1000)),
+    };
+    if (job.lastNote) snap.doing = job.lastNote;
+    if (job.active && job.active.length > 0) snap.running = job.active;
+    if (answer) {
+      snap.answer = answer.length > SNAPSHOT_HEAD ? `${answer.slice(0, SNAPSHOT_HEAD - 1)}…` : answer;
+      snap.answer_chars = answer.length;
+    }
+    snap.note = answer
+      ? "This is Pi's answer so far and the task may still be running. Relay it as a short spoken update in your own words. Do not call stop_thinking for a status question."
+      : "Pi has not written an answer yet. Say briefly what it is doing; do not invent findings. Do not call stop_thinking for a status question.";
+    return snap;
+  }
+  const last = lastAssistantText(world.branch, null);
+  if (last) {
+    return {
+      request,
+      status: "settled",
+      answer: last.length > SNAPSHOT_HEAD ? `${last.slice(0, SNAPSHOT_HEAD - 1)}…` : last,
+      answer_chars: last.length,
+      note: "No voice job is running. This is Pi's last answer in the session.",
+    };
+  }
+  return { request, status: "idle", note: "Nothing has been handed to Pi in this call." };
 }
 
 /** pi-web-access writes one Source line per result in its web_search text. */

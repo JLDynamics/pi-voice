@@ -9,7 +9,8 @@ import type {
   SessionEntry,
 } from "@earendil-works/pi-coding-agent";
 import type { AutocompleteItem, Component } from "@earendil-works/pi-tui";
-import { clearOwnedLease, liveForeignOwner, reapOrphans, VoiceChild, type VoiceHistoryTurn } from "./child.ts";
+import { clearOwnedLease, liveForeignOwner, reapOrphans, VoiceChild, type ThinkingEffort, type VoiceHistoryTurn } from "./child.ts";
+import { applyWorkerEffect, startWorkersIfEnabled, type WorkerHandle } from "./worker.ts";
 import {
   jobIdFromText,
   jobPrompt,
@@ -46,6 +47,7 @@ import {
 import { stepLifecycle } from "./voice-lifecycle.ts";
 import { stepTranscript } from "./voice-transcript.ts";
 import { stepJob } from "./voice-job.ts";
+import { FACE_TYPE, registerFaceRenderer } from "./voice-render.ts";
 
 export type {
   ChildPid,
@@ -106,7 +108,6 @@ export const WORK_SECTION = [
 ].join(" ");
 
 const WIDGET_KEY = "pi-voice";
-const FACE_TYPE = "pi-voice-face";
 
 /** Final voice turns are already in Pi's session branch when /voice restarts. */
 export function voiceHistory(branch: SessionEntry[]): VoiceHistoryTurn[] {
@@ -183,6 +184,8 @@ export function step(state: VoiceState, event: VoiceEvent, world: StepWorld): St
     case "childExit":
     case "shutdown":
     case "speechStarted":
+    case "workerReady":
+    case "workerError":
       return stepLifecycle(state, event, world);
     case "spokenDelta":
     case "composerInput":
@@ -192,8 +195,13 @@ export function step(state: VoiceState, event: VoiceEvent, world: StepWorld): St
     case "work":
     case "stopWork":
     case "jobProgress":
+    case "statusRequest":
     case "jobMessage":
     case "agentSettled":
+    case "workerJob":
+    case "workerResult":
+    case "workerStatus":
+    case "workerList":
       return stepJob(state, event, world);
   }
 }
@@ -201,43 +209,19 @@ export function step(state: VoiceState, event: VoiceEvent, world: StepWorld): St
 export class Voice {
   static attach(pi: ExtensionAPI): Voice {
     const voice = new Voice(pi);
-    if (typeof pi.registerEntryRenderer === "function") {
-      pi.registerEntryRenderer<{ kind: string; text?: string; id?: string }>(FACE_TYPE, (entry) => {
-        const data = entry.data;
-        if (data?.kind === "spoken-final" && data.id && data.text != null) {
-          voice.spokenTexts.set(data.id, data.text);
-          return;
-        }
-        if (data?.kind === "heard-final" && data.id && data.text != null) {
-          voice.heardTexts.set(data.id, data.text);
-          return;
-        }
-        if (data?.kind === "heard-live" && data.id) {
-          if (!voice.heardTexts.has(data.id)) voice.heardTexts.set(data.id, data.text ?? "");
-          const id = data.id;
-          return { render: (width: number) => faceLines(USER_LABEL, voice.heardTexts.get(id) ?? "", width), invalidate() {} };
-        }
-        if (data?.kind === "spoken-live" && data.id) {
-          if (!voice.spokenTexts.has(data.id)) voice.spokenTexts.set(data.id, data.text ?? "");
-          const id = data.id;
-          return { render: (width: number) => spokenFaceLines(voice.spokenTexts.get(id) ?? "", width), invalidate() {} };
-        }
-        if (!data?.text) return;
-        const who = data.kind === "heard" ? USER_LABEL : data.kind === "spoken" ? AGENT_LABEL : "pi";
-        const text = data.text;
-        const face: Component = {
-          render: (width: number) => sessionFaceLines(who, text, width, voice.state.tag !== "off"),
-          invalidate() {},
-        };
-        return face;
-      });
-    }
+    registerFaceRenderer(pi, {
+      spokenTexts: voice.spokenTexts,
+      heardTexts: voice.heardTexts,
+      voiceActive: () => voice.state.tag !== "off",
+    });
     return voice;
   }
 
   private readonly pi: ExtensionAPI;
   private state: VoiceState = { tag: "off" };
   private child: VoiceChild | undefined;
+  /** The durable worker host, when `VOICE_WORKERS=durable`; one per call. */
+  private workers: WorkerHandle | undefined;
   private epoch = 0;
   private lastCtx: ExtensionContext | undefined;
   private pendingMute: boolean | undefined;
@@ -325,7 +309,7 @@ export class Voice {
     if (this.state.tag === "on" && this.state.job.tag === "running" &&
         jobIdFromText(event.prompt) === this.state.job.id) {
       event.systemPromptOptions.sections.voice = WORK_SECTION;
-      this.capJobThinking();
+      this.applyJobEffort(this.state.job.effort);
     } else {
       delete event.systemPromptOptions.sections.voice;
     }
@@ -361,24 +345,54 @@ export class Voice {
   private capJobThinking(): void {
     if (typeof this.pi.getThinkingLevel !== "function" || typeof this.pi.setThinkingLevel !== "function") return;
     const level = this.pi.getThinkingLevel();
-    if (level === "off" || level === "low" || level === "minimal") return;
+    if (level === "off" || level === "minimal" || level === "low") return;
     if (this.thinkingRestore == null) this.thinkingRestore = level;
     this.pi.setThinkingLevel("off");
   }
 
-  private restoreThinking(): void {
+  /**
+   * Apply the voice model's per-job thinking effort.
+   *
+   * Codex sends `backend_thinking_effort` with each handoff and the worker's
+   * request carries it. pi exposes only a session-wide level, so this mirrors
+   * Codex as closely as the seam allows: the previous level is stashed once, and
+   * the job's effort is set for the turn it starts. A job that asks for more
+   * than the session had raises it; the default (off) lowers a verbose session
+   * to the fast path, which is the old behaviour.
+   */
+  private applyJobEffort(effort: ThinkingEffort): void {
+    if (typeof this.pi.getThinkingLevel !== "function" || typeof this.pi.setThinkingLevel !== "function") return;
+    const current = this.pi.getThinkingLevel() as ThinkingEffort;
+    if (current === effort) return;
+    if (this.thinkingRestore == null) this.thinkingRestore = current;
+    this.pi.setThinkingLevel(effort as "off");
+  }
+
+  /**
+   * Put the level back, but never over a change the user made during the job.
+   * `thinkingRestore` is what the level was before the job clamped it; if the
+   * level is no longer the one this job set, the user moved it and owns it now.
+   */
+  private restoreThinking(jobEffort?: ThinkingEffort): void {
     if (this.thinkingRestore == null || typeof this.pi.setThinkingLevel !== "function") return;
     const saved = this.thinkingRestore;
     this.thinkingRestore = undefined;
+    if (jobEffort != null && typeof this.pi.getThinkingLevel === "function") {
+      const current = this.pi.getThinkingLevel();
+      if (current !== jobEffort) return;
+    }
     this.pi.setThinkingLevel(saved as "off");
   }
 
   private commit(next: Step, ctx?: ExtensionContext): void {
     const wasRunning = this.state.tag === "on" && this.state.job.tag === "running";
+    const priorEffort = wasRunning ? (this.state as Extract<VoiceState, { tag: "on" }>).job : undefined;
     this.state = next.state;
     (globalThis as typeof globalThis & { __piVoiceActive?: boolean }).__piVoiceActive = this.state.tag !== "off";
     const nowRunning = this.state.tag === "on" && this.state.job.tag === "running";
-    if (wasRunning && !nowRunning) this.restoreThinking();
+    if (wasRunning && !nowRunning) {
+      this.restoreThinking(priorEffort?.tag === "running" ? priorEffort.effort : undefined);
+    }
     for (const effect of next.effects) this.apply(effect, ctx);
   }
 
@@ -395,6 +409,8 @@ export class Voice {
       case "quitChild":
         this.requestTranscriptRender = undefined;
         this.epoch += 1;
+        this.workers?.quit();
+        this.workers = undefined;
         this.child?.quit();
         this.child = undefined;
         this.pendingMute = undefined;
@@ -426,6 +442,17 @@ export class Voice {
         return;
       case "sendJobUpdate":
         this.child?.sendJobUpdate(effect.id, effect.status, effect.note);
+        return;
+      case "sendProgress":
+        this.child?.sendProgress(effect.id, effect.tool, effect.phase, effect.summary, effect.active);
+        return;
+      case "sendSnapshot":
+        this.child?.sendSnapshot(effect.id, JSON.parse(effect.payload));
+        return;
+      case "workerSpawn":
+      case "workerStop":
+      case "workerAsk":
+        applyWorkerEffect(effect, this.workers);
         return;
       case "abortWork":
         // ExtensionContext.abort() stops the agent operation in flight. The
@@ -505,6 +532,12 @@ export class Voice {
         if (this.epoch !== epoch) return;
         this.feed(event, this.lastCtx ?? ctx);
       }, history);
+      this.workers = startWorkersIfEnabled(
+        epoch,
+        (mine) => mine === this.epoch,
+        (event) => this.feed(event, this.lastCtx ?? ctx),
+        (line) => this.child?.note(line),
+      );
       if (this.pendingMute != null) this.child.setMuted(this.pendingMute);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);

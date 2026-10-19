@@ -111,6 +111,7 @@ extension LiveVoiceBackend {
         guard !closed, seenToolCalls.insert(callId).inserted else { return }
         if name == HeadlessTools.spawnThinking {
             let brief = HeadlessTools.spawnBrief(argsJson)
+            let effort = HeadlessTools.spawnEffort(argsJson)
             // The same task again within seconds: keep Pi's current work.
             if let current = piJobs.activeRepeat(of: brief) {
                 sendToolOutput(callId: callId, output: Self.json(PiJobTracker.repeatAck(id: current)))
@@ -121,12 +122,17 @@ extension LiveVoiceBackend {
             let id = UUID().uuidString
             // Read before ask(): the new id becomes active there.
             let steering = piJobs.hasActive
-            piJobs.ask(id: id, brief: brief)
+            piJobs.ask(id: id, brief: brief, effort: effort)
             startPiProgressLoop(id: id)
-            sendToolOutput(callId: callId, output: Self.json(PiJobTracker.handoffAck(id: id, steering: steering)))
+            // Parallel mode changes what "a second brief" means, and the ack is
+            // the only place the voice model learns it per call.
+            let parallel = HeadlessTools.parallelWorkers
+            sendToolOutput(callId: callId, output: Self.json(
+                PiJobTracker.handoffAck(id: id, steering: steering, parallel: parallel)
+            ))
             handoffAckCallId = callId
-            appendPiJournal(PiJobTracker.journalLine(now: Date(), event: steering ? "steered" : "queued", id: id, brief: brief))
-            if !brief.isEmpty { onSpawnThinking?(id, brief) }
+            appendPiJournal(PiJobTracker.journalLine(now: Date(), event: steering ? "steered" : "queued", id: id, brief: brief, extra: ["effort": effort]))
+            if !brief.isEmpty { onSpawnThinking?(id, brief, effort) }
             return
         }
         if name == HeadlessTools.stopThinking {
@@ -137,6 +143,14 @@ extension LiveVoiceBackend {
             } else {
                 sendToolOutput(callId: callId, output: "{\"status\":\"idle\"}")
             }
+            return
+        }
+        if name == HeadlessTools.checkThinking {
+            // Read-only: the extension answers from Pi's session; the mirror is
+            // the fallback. Nothing here starts, steers, or stops a job.
+            let request = HeadlessTools.checkRequest(argsJson)
+            handoffAckCallId = callId
+            requestPiStatus(id: HeadlessTools.checkJobId(argsJson), request: request, callId: callId)
             return
         }
         let generation = toolScope.generation
