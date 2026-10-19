@@ -76,6 +76,19 @@ Read the linked doc before changing that area; these are the load-bearing rules.
 - Secrets live in `~/.config/chatbot/env` (mode 600). Keep credentials and personal session data outside the repository.
 - Work on a feature branch off `main` and open a PR; keep each PR to one change.
 
+## Rules and what enforces them
+
+| Rule | Enforced by |
+| --- | --- |
+| Voice.app has no window or menu; `player.play()` only in `startPlayerIfRendering()`; no `:7860` sidecar; no `pkill`/`killall` | `tests/test_architecture_invariants.py` |
+| Temp dirs are made under `tmpdir()`, never the cwd | `tests/test_temp_dirs.py` |
+| CI, README and this file run the same checks | `tests/test_command_drift.py` |
+| Swift tests use `check()`, never `assert()` | `tests/test_swift_test_checks.py` |
+| Cross-language wire format; `VOICE_WORKERS` modes | `scripts/check-contracts.sh --mutate`, `tests/test_tool_contract.py` |
+| This file stays small and its paths exist | `tests/test_docs_drift.py` |
+
+When corrected, fix the mistake and add its row. A rule with no enforcer is a repeat: enforce it in the same change.
+
 ## Known constraints
 
 - Siri TTS goes through a binary that dlopens private Apple frameworks. A macOS update can break it and there is **no fallback backend** — no voice at all until it is fixed.
