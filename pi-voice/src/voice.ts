@@ -220,7 +220,7 @@ export class Voice {
   private readonly pi: ExtensionAPI;
   private state: VoiceState = { tag: "off" };
   private child: VoiceChild | undefined;
-  /** The durable worker host, when `VOICE_WORKERS=durable`; one per call. */
+  /** The durable worker host, unless `VOICE_WORKERS` selects single-session mode; one per call. */
   private workers: WorkerHandle | undefined;
   private epoch = 0;
   private lastCtx: ExtensionContext | undefined;
