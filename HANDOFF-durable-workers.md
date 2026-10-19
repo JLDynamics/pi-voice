@@ -154,17 +154,29 @@ x.com and list trending topics" depends on the model choosing to load the
 - prove the skill path works end to end, or
 - add a browser tool to `pi-voice/src/worker/host.mjs`.
 
-### 3. Crash-resume (untested)
+### 3. Crash-resume — DONE (verify on this machine)
 
-Worker state is now on disk via `openNodeJsonlStorage`, so resume is possible,
-but no test kills a host mid-job and reopens the storage. `pi-durable`'s README
-documents resume; the pi-voice path is unverified.
+`jobs.json` in the run directory maps voice job id → conversation (the
+conversations cannot express that mapping, and the model addresses jobs by id).
+`resumeTarget()` reopens the newest run with unfinished jobs
+(`VOICE_WORKER_RESUME=<dir>`, `none` to start fresh), `harness.resume()` lets
+`pi-durable` continue, and `resumeUnfinished()` re-registers each job and emits
+`job: working — resumed after a restart (attempt N)`. `settle()` is shared with a
+fresh spawn.
 
-### 4. Pi session file on the durable path
+Caps: `MAX_CONCURRENT_RESUMES` 2 at once, `MAX_RESUMES` 2 then reported failed.
+A run with no pending submission is reported failed, never left absent.
 
-Pi never runs its own model turn on the durable path, so it never writes a
-session `.jsonl`; `upsertFace` entries exist only in the live chat. Verify this
-is acceptable or persist a record to Pi's session as well.
+Observed: job killed with `kill -9` mid-run, host restarted, job continued from
+step 2 (not step 1) and completed.
+
+### 4. Pi session file on the durable path — decided: do not match
+
+Codex's thread *is* its record, so there is nothing separate to write. Here the
+job record is the worker's JSONL under `~/.config/pi-voice/workers/`, which is
+greppable and survives the process. Writing a copy into Pi's session would put
+the work into Pi's model context, which the custom-entry design avoids. Reviewed
+against Codex on 2026-10-19 and left as-is.
 
 ### 5. `pi-durable` is Experimental
 

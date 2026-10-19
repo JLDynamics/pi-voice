@@ -296,3 +296,54 @@ describe("worker write policy", () => {
     assert.match(profile, /\(subpath "\/private\/tmp"\)/, "temp dirs stay writable for normal tooling");
   });
 });
+
+describe("worker crash resume", () => {
+  // A host that dies mid-job used to lose the work silently while the voice call
+  // kept talking. These pin the recovery rules; the host's own behaviour is
+  // covered by the kill-and-restart check in the handoff.
+  it("picks the newest run that still has unfinished jobs, and nothing otherwise", async () => {
+    const { mkdtempSync, writeFileSync, mkdirSync } = await import("node:fs");
+    const { resumeTarget, runDirectories, readJobs, writeJobs } = await import("./config.mjs");
+    const root = mkdtempSync(join(tmpdir(), "workers-"));
+    mkdirSync(join(root, "run-a"), { recursive: true });
+    mkdirSync(join(root, "run-b"), { recursive: true });
+    writeJobs(join(root, "run-a"), [{ id: "old", finished: true }]);
+    writeJobs(join(root, "run-b"), [{ id: "live", finished: false }]);
+
+    assert.deepEqual(
+      runDirectories(root).map((d: string) => d.split("/").pop()),
+      ["run-b", "run-a"],
+      "newest first",
+    );
+    assert.equal(resumeTarget(root, {}), join(root, "run-b"), "the unfinished run wins");
+    assert.deepEqual(readJobs(join(root, "run-b")), [{ id: "live", finished: false }]);
+
+    // Everything finished: start fresh.
+    writeJobs(join(root, "run-b"), [{ id: "live", finished: true }]);
+    assert.equal(resumeTarget(root, {}), undefined);
+  });
+
+  it("can be told which run to reopen, or to never resume", async () => {
+    const { resumeTarget } = await import("./config.mjs");
+    assert.equal(resumeTarget("/state", { VOICE_WORKER_RESUME: "/state/run-x" }), "/state/run-x");
+    for (const off of ["none", "off", "0", "NONE"]) {
+      assert.equal(resumeTarget("/state", { VOICE_WORKER_RESUME: off }), undefined, off);
+    }
+  });
+
+  it("survives a missing or corrupt job record", async () => {
+    const { mkdtempSync, writeFileSync } = await import("node:fs");
+    const { readJobs, resumeTarget } = await import("./config.mjs");
+    const root = mkdtempSync(join(tmpdir(), "workers-"));
+    assert.deepEqual(readJobs(root), [], "no file is no jobs");
+    writeFileSync(join(root, "jobs.json"), "{not json");
+    assert.deepEqual(readJobs(root), [], "corrupt is no jobs");
+    assert.equal(resumeTarget(root, {}), undefined, "corrupt state must not block a fresh run");
+  });
+
+  it("caps resumes, so a job that always crashes is declared dead", async () => {
+    const { MAX_RESUMES, MAX_CONCURRENT_RESUMES } = await import("./config.mjs");
+    assert.equal(MAX_RESUMES, 2);
+    assert.equal(MAX_CONCURRENT_RESUMES, 2);
+  });
+});

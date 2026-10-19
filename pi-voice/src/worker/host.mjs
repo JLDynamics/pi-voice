@@ -35,7 +35,12 @@ import { promisify } from "node:util";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
   findSkills,
+  MAX_CONCURRENT_RESUMES,
+  MAX_RESUMES,
+  readJobs,
+  resumeTarget,
   workerStateRoot,
+  writeJobs,
   hasCredential,
   instructionsText,
   loadCredentials,
@@ -467,8 +472,10 @@ const registry = createRegistry();
 registry.install(extension);
 
 // One directory per host run, so two calls never interleave their conversations
-// and a finished job stays readable afterwards.
-const stateRoot = join(workerStateRoot(), `run-${new Date().toISOString().replace(/[:.]/g, "-")}-${process.pid}`);
+// and a finished job stays readable afterwards. A run that still has unfinished
+// jobs is reopened instead, which is how a crashed host recovers its work.
+const resumeDir = resumeTarget();
+const stateRoot = resumeDir ?? join(workerStateRoot(), `run-${new Date().toISOString().replace(/[:.]/g, "-")}-${process.pid}`);
 let storage = new MemoryStorage();
 let storageKind = `memory (${stateRoot} could not be used)`;
 try {
@@ -481,6 +488,39 @@ try {
 note(`worker state: ${storageKind}`);
 
 const harness = await Harness.open(storage, { models, registry }, context);
+
+/**
+ * The saved record of every job in this run.
+ *
+ * The conversations alone are not enough: `pi-durable` knows a conversation has an
+ * unsettled submission, but not which voice job id it belongs to, and the voice
+ * model addresses jobs by id. Keeping the mapping on disk is what lets a restart
+ * say "job X resumed" instead of silently adopting an anonymous conversation.
+ */
+const jobRecords = readJobs(stateRoot);
+const saveJobs = () => writeJobs(stateRoot, jobRecords);
+const recordJob = (job) => {
+  const at = jobRecords.findIndex((r) => r.id === job.id);
+  const entry = {
+    id: job.id,
+    conversationId: job.conversationId,
+    brief: job.brief,
+    effort: job.effort ?? "off",
+    startedAt: job.startedAt,
+    finished: false,
+    resumes: job.resumes ?? 0,
+  };
+  if (at >= 0) jobRecords[at] = { ...jobRecords[at], ...entry };
+  else jobRecords.push(entry);
+  saveJobs();
+};
+const finishJob = (id, outcome) => {
+  const at = jobRecords.findIndex((r) => r.id === id);
+  if (at >= 0) {
+    jobRecords[at] = { ...jobRecords[at], finished: true, outcome };
+    saveJobs();
+  }
+};
 const model = resolvedModel.model;
 if (!hasCredential(model.provider)) {
   const where = credentials.file;
@@ -492,8 +532,10 @@ if (!hasCredential(model.provider)) {
   process.exit(2);
 }
 const root = await harness.root(context, { agent: { model } });
-emit({ ev: "ready", model: `${model.provider}/${model.modelId}`, state: storageKind });
+emit({ ev: "ready", model: `${model.provider}/${model.modelId}`, state: storageKind, resumed: Boolean(resumeDir) });
 note(`ready with ${model.provider}/${model.modelId} (${resolvedModel.source})`);
+if (resumeDir) note(`reopened ${resumeDir}`);
+void resumeUnfinished().catch((error) => note(`resume failed: ${error?.stack ?? error}`));
 
 /** Send one job to a fresh conversation and stream its life back. */
 async function spawn(id, brief, effort) {
@@ -510,6 +552,7 @@ async function spawn(id, brief, effort) {
     id,
     conversationId: conversation.id,
     brief,
+    effort: level,
     startedAt: Date.now(),
     active: new Set(),
     lastNote: null,
@@ -517,6 +560,7 @@ async function spawn(id, brief, effort) {
     submission: null,
   };
   jobs.set(id, job);
+  recordJob(job);
   emit({ ev: "job", id, status: "queued", note: `effort ${level}` });
 
   const submission = await handle.submit(
@@ -533,7 +577,28 @@ async function spawn(id, brief, effort) {
   job.submission = submission;
   emit({ ev: "job", id, status: "working" });
 
-  const settled = await submission.wait(context);
+  await settle(job, handle, submission);
+}
+
+/**
+ * Wait for one submission and report its outcome. Shared by a fresh spawn and by
+ * a resume, so a recovered job follows exactly the same path as a new one.
+ */
+async function settle(job, handle, submission) {
+  const { id } = job;
+  let settled;
+  try {
+    settled = await submission.wait(context);
+  } catch (error) {
+    // A resumed submission can fail to reattach (its run is gone). Report it
+    // rather than leaving the voice model waiting on a job that cannot finish.
+    const message = String(error?.message ?? error);
+    note(`job ${id} lost its run: ${message}`);
+    emit({ ev: "job", id, status: "failed", note: `worker lost the job: ${message}` });
+    finishJob(id, "failed");
+    jobs.delete(id);
+    return;
+  }
   job.settled = true;
   if (settled.status !== "done") {
     // `reason` is the only useful part: "no_model", "no_credential", a provider
@@ -541,6 +606,7 @@ async function spawn(id, brief, effort) {
     const reason = [settled.reason, settled.detail].filter(Boolean).join(": ");
     note(`job ${id} ${settled.status}${reason}`);
     emit({ ev: "job", id, status: "failed", note: `worker ${settled.status}${reason}` });
+    finishJob(id, "failed");
     jobs.delete(id);
     return;
   }
@@ -552,12 +618,14 @@ async function spawn(id, brief, effort) {
     .trim();
   if (!full) {
     emit({ ev: "job", id, status: "failed", note: "worker finished with no answer" });
+    finishJob(id, "failed");
     jobs.delete(id);
     return;
   }
   job.answer = full;
   emit({ ev: "job", id, status: "done" });
   emit({ ev: "result", id, speak: head(full, RESULT_MAX), full });
+  finishJob(id, "done");
   note(`job ${id} done (${full.length} chars)`);
 }
 
@@ -619,6 +687,102 @@ function list() {
       active: [...j.active],
     })),
   });
+}
+
+// ── resume ───────────────────────────────────────────────────────────────────
+/**
+ * Pick up jobs a previous host left behind.
+ *
+ * A crash mid-job used to lose the work silently while the voice call kept
+ * talking, so `check_thinking` reported a job that no longer existed. Reopening
+ * the storage is enough for `pi-durable` to continue the run; this re-registers
+ * the job under its voice id so status, stop and the result all still work.
+ *
+ * Bounded like Codex: at most MAX_CONCURRENT_RESUMES at once, and a job that has
+ * already been resumed MAX_RESUMES times is declared dead instead of retried.
+ */
+async function resumeUnfinished() {
+  if (!resumeDir) return;
+  const unfinished = jobRecords.filter((r) => !r.finished);
+  if (unfinished.length === 0) return;
+  harness.resume();
+
+  let inspection;
+  try {
+    inspection = await harness.inspect(context);
+  } catch (error) {
+    note(`could not inspect saved work in ${resumeDir}: ${error?.message ?? error}`);
+    return;
+  }
+
+  const live = inspection.submissions.filter((s) => s.status === "queued" || s.status === "placed");
+  let started = 0;
+  for (const record of unfinished) {
+    if (started >= MAX_CONCURRENT_RESUMES) {
+      emit({ ev: "job", id: record.id, status: "failed",
+             note: `not resumed: ${MAX_CONCURRENT_RESUMES} other job(s) were already recovering` });
+      finishJob(record.id, "failed");
+      continue;
+    }
+    const resumes = (record.resumes ?? 0) + 1;
+    if (resumes > MAX_RESUMES) {
+      note(`job ${record.id} failed ${resumes - 1} times already; not resuming again`);
+      emit({ ev: "job", id: record.id, status: "failed",
+             note: `gave up after ${MAX_RESUMES} restarts` });
+      finishJob(record.id, "failed");
+      continue;
+    }
+
+    const submission = live.find((s) => s.conversationId === record.conversationId);
+    if (!submission) {
+      // The conversation is saved but nothing is pending: the run ended (or never
+      // started) before the host died, so there is nothing to pick up.
+      note(`job ${record.id} has no unfinished submission; marking it failed`);
+      emit({ ev: "job", id: record.id, status: "failed",
+             note: "worker restarted and the job was not running" });
+      finishJob(record.id, "failed");
+      continue;
+    }
+
+    const handle = await harness.conversation(record.conversationId, context);
+    if (!handle) {
+      emit({ ev: "job", id: record.id, status: "failed", note: "worker lost the conversation" });
+      finishJob(record.id, "failed");
+      continue;
+    }
+
+    const job = {
+      id: record.id,
+      conversationId: record.conversationId,
+      brief: record.brief,
+      effort: record.effort,
+      startedAt: record.startedAt,
+      active: new Set(),
+      lastNote: "resumed after a restart",
+      settled: false,
+      resumes,
+      submission: null,
+    };
+    jobs.set(record.id, job);
+    recordJob(job);
+    started += 1;
+    note(`resuming job ${record.id} (attempt ${resumes})`);
+    emit({ ev: "job", id: record.id, status: "working", note: `resumed after a restart (attempt ${resumes})` });
+
+    const reclaim = await harness.submission(submission.id, context, record.conversationId);
+    if (!reclaim) {
+      emit({ ev: "job", id: record.id, status: "failed", note: "worker could not reattach the job" });
+      finishJob(record.id, "failed");
+      jobs.delete(record.id);
+      continue;
+    }
+    void settle(job, handle, reclaim).catch((error) => {
+      note(`resumed job ${record.id} failed: ${error?.stack ?? error}`);
+      emit({ ev: "job", id: record.id, status: "failed", note: String(error?.message ?? error) });
+      finishJob(record.id, "failed");
+      jobs.delete(record.id);
+    });
+  }
 }
 
 // ── stdin loop ───────────────────────────────────────────────────────────────

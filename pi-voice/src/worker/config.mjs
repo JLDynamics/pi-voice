@@ -9,7 +9,7 @@
 //   - it reads the same project instructions as the session
 //   - credentials come from the machine's normal store, never from a constant
 
-import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 import { readdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
@@ -324,4 +324,65 @@ export function workerStateRoot(env = process.env) {
   const explicit = (env.VOICE_WORKER_STATE ?? "").trim();
   if (explicit) return explicit;
   return join(homedir(), ".config", "pi-voice", "workers");
+}
+
+/** How many times one job may be resumed before it is declared dead. */
+export const MAX_RESUMES = 2;
+/** How many jobs a restart resumes at once (Codex caps this at 2 as well). */
+export const MAX_CONCURRENT_RESUMES = 2;
+
+/** The run directories under the state root, newest first. */
+export function runDirectories(root = workerStateRoot()) {
+  let names;
+  try {
+    names = readdirSync(root, { withFileTypes: true })
+      .filter((e) => e.isDirectory() && e.name.startsWith("run-"))
+      .map((e) => e.name)
+      .sort()
+      .reverse();
+  } catch {
+    return [];
+  }
+  return names.map((name) => join(root, name));
+}
+
+/**
+ * The directory to reopen on start, or undefined to begin a fresh run.
+ *
+ * `VOICE_WORKER_RESUME` may name a directory, or `none` to never resume. Without
+ * it the newest run that still has unfinished jobs is reused, which is what makes
+ * a host crash recoverable: the saved conversation is where the work stopped.
+ */
+export function resumeTarget(root = workerStateRoot(), env = process.env) {
+  const choice = (env.VOICE_WORKER_RESUME ?? "").trim();
+  if (choice && ["none", "off", "0"].includes(choice.toLowerCase())) return undefined;
+  if (choice) return choice;
+  for (const dir of runDirectories(root)) {
+    const jobs = readJobs(dir);
+    if (jobs.some((j) => !j.finished)) return dir;
+  }
+  return undefined;
+}
+
+/** The saved job records for one run directory. */
+export function readJobs(dir) {
+  try {
+    const data = JSON.parse(readFileSync(join(dir, "jobs.json"), "utf8"));
+    return Array.isArray(data) ? data : [];
+  } catch {
+    return [];
+  }
+}
+
+/** Write the job records for one run directory, atomically. */
+export function writeJobs(dir, jobs) {
+  try {
+    const file = join(dir, "jobs.json");
+    const tmp = `${file}.${process.pid}.tmp`;
+    writeFileSync(tmp, JSON.stringify(jobs, null, 2), { mode: 0o600 });
+    renameSync(tmp, file);
+    return true;
+  } catch {
+    return false;
+  }
 }
