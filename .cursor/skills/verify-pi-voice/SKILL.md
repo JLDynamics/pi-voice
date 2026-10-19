@@ -56,7 +56,8 @@ $SKILL/scripts/pv.py drive handoff
 $SKILL/scripts/pv.py drive steer
 $SKILL/scripts/pv.py drive stop
 $SKILL/scripts/pv.py drive memory
-$SKILL/scripts/pv.py drive handoff --via pi             # full chain, real Pi
+$SKILL/scripts/pv.py drive handoff --via pi             # full chain, real Pi (pins VOICE_WORKERS=single: the job reaches Pi's own session)
+PV_VIA=durable $SKILL/scripts/pv.py drive handoff --via pi   # the default product path: jobs run on the worker host
 $SKILL/scripts/pv.py drive memory --via pi              # /voice, stop, /voice again
 $SKILL/scripts/pv.py drive noaudio                      # no audio IO: readable error, exit 3, no crash
 $SKILL/scripts/pv.py drive pack                         # 3 calls: first live turn after a pack is answered

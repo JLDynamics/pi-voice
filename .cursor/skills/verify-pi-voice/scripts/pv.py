@@ -44,6 +44,11 @@ FIXTURE = {
 JOB_MARKER = re.compile(r"\[Pi voice job id: [^\]]+\]$")
 
 
+def durable_workers() -> bool:
+    """`PV_VIA=durable` drives the default product path, the parallel worker host. Anything else pins the single Pi session."""
+    return os.environ.get("PV_VIA") == "durable"
+
+
 def die(message: str) -> None:
     print(f"pv: {message}", file=sys.stderr)
     sys.exit(2)
@@ -877,11 +882,7 @@ class PiTerminal:
             # Parallel workers are the default; a drive that asserts the job
             # reaching Pi's own session must ask for that path explicitly.
             # `PV_VIA=durable` opts a drive into the worker host instead.
-            **(
-                {}
-                if os.environ.get("PV_VIA") == "durable"
-                else {"VOICE_WORKERS": os.environ.get("PV_WORKERS", "single")}
-            ),
+            **({} if durable_workers() else {"VOICE_WORKERS": os.environ.get("PV_WORKERS", "single")}),
         )
         argv = [
             "pi",
@@ -1070,24 +1071,25 @@ def drive_handoff_pi(run: Path, st: dict[str, Any], proof: Proof) -> None:
         )
         n, k = len(pi.entries()), pi.last_row()
         pi.type_line("Please have Pi list the files in the current working directory and tell me their names.")
-        job = pi.wait_for(
-            lambda: next(
-                (
-                    e
-                    for e in pi.entries()[n:]
-                    if e.get("type") == "message"
-                    and (e.get("message") or {}).get("role") == "user"
-                    and "[Pi voice job id:" in pi.text_of(e)
+        if not durable_workers():
+            job = pi.wait_for(
+                lambda: next(
+                    (
+                        e
+                        for e in pi.entries()[n:]
+                        if e.get("type") == "message"
+                        and (e.get("message") or {}).get("role") == "user"
+                        and "[Pi voice job id:" in pi.text_of(e)
+                    ),
+                    None,
                 ),
-                None,
-            ),
-            60,
-        )
-        proof.check(
-            "Pi receives the job message, marker last",
-            job and JOB_MARKER.search(pi.text_of(job)),
-            pi.text_of(job)[-200:] if job else None,
-        )
+                60,
+            )
+            proof.check(
+                "Pi receives the job message, marker last",
+                job and JOB_MARKER.search(pi.text_of(job)),
+                pi.text_of(job)[-200:] if job else None,
+            )
         final = pi.wait_for(
             lambda: next((d for d in pi.spoken_after(k) if re.search(r"readme|main|notes", d["text"], re.I)), None), 240
         )
@@ -1109,6 +1111,13 @@ def drive_handoff_pi(run: Path, st: dict[str, Any], proof: Proof) -> None:
             any(j.get("event") == "queued" for j in journal),
             [j.get("event") for j in journal],
         )
+        if durable_workers():
+            records = sorted((pi.cfg / "workers").glob("run-*/doc-*.jsonl"))
+            proof.check(
+                "worker host kept the job under the isolated config, not the real one",
+                bool(records),
+                [str(r.relative_to(pi.cfg)) for r in records[:3]],
+            )
         pi.stop_voice("call")
     finally:
         pi.save()
