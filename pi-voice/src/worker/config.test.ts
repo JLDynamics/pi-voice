@@ -12,6 +12,7 @@ import {
   instructionsText,
   projectInstructions,
   resolveModel,
+  shellEnv,
 } from "./config.mjs";
 
 /** A throwaway PI_HOME with a settings.json and models.json. */
@@ -345,5 +346,17 @@ describe("worker crash resume", () => {
     const { MAX_RESUMES, MAX_CONCURRENT_RESUMES } = await import("./config.mjs");
     assert.equal(MAX_RESUMES, 2);
     assert.equal(MAX_CONCURRENT_RESUMES, 2);
+  });
+});
+
+describe("shellEnv", () => {
+  it("points pi-browser state at the temp dir so the sandbox allows it", () => {
+    const env = shellEnv({ PATH: "/bin" });
+    assert.equal(env.PIBROWSE_STATE, join(tmpdir(), "pi-voice-browser"));
+    assert.equal(env.PATH, "/bin");
+  });
+
+  it("keeps an explicit PIBROWSE_STATE", () => {
+    assert.equal(shellEnv({ PIBROWSE_STATE: "/x/y" }).PIBROWSE_STATE, "/x/y");
   });
 });

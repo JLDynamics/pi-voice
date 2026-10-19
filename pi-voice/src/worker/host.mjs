@@ -47,6 +47,7 @@ import {
   resolveModel,
   sandboxMode,
   sandboxProfile,
+  shellEnv,
   writablePath,
   workspaceRoots,
   writeRefusal,
@@ -170,6 +171,7 @@ const bashTool = defineTool({
         timeout: seconds * 1000,
         maxBuffer: 4 * 1024 * 1024,
         cwd: process.cwd(),
+        env: shellEnv(),
       });
       toolProgress(api.conversationId, "bash", "end", summaryOf("bash", args));
       return { output: [{ type: "text", text: `${stdout}${stderr}`.trim() || "(no output)" }] };

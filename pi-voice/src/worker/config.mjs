@@ -11,7 +11,7 @@
 
 import { existsSync, readdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 import { readdir } from "node:fs/promises";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { createModels, createProvider } from "@earendil-works/pi-ai/models";
 import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy";
@@ -385,4 +385,14 @@ export function writeJobs(dir, jobs) {
   } catch {
     return false;
   }
+}
+
+/**
+ * Environment for the worker's `bash`. The pi-browser skill keeps its socket and
+ * log under its own checkout, which the write policy rightly blocks. Pointing it
+ * at the temp dir (writable by design) makes the skill work on the first try. An
+ * explicit PIBROWSE_STATE still wins.
+ */
+export function shellEnv(env = process.env) {
+  return { ...env, PIBROWSE_STATE: env.PIBROWSE_STATE || join(tmpdir(), "pi-voice-browser") };
 }
